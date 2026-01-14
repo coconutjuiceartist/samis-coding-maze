@@ -1,0 +1,1571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sami's Maze - Learn to Code!</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-green: #4CAF50;
+            --primary-blue: #2196F3;
+            --primary-pink: #E91E63;
+            --primary-purple: #9C27B0;
+            --primary-orange: #FF9800;
+            --primary-yellow: #FFEB3B;
+            --lava-color: #FF5722;
+            --wall-color: #795548;
+            --path-color: #C8E6C9;
+            --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        body {
+            font-family: 'Comic Sans MS', 'Chalkboard', 'Comic Neue', cursive, sans-serif;
+            background: var(--bg-gradient);
+            min-height: 100vh;
+            padding: 10px;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            color: #fff;
+            text-shadow: 3px 3px 0 #E91E63, 5px 5px 0 rgba(0,0,0,0.2);
+            animation: bounce 2s ease-in-out infinite;
+        }
+
+        .header .subtitle {
+            font-size: 1.2rem;
+            color: #FFE082;
+            margin-top: 5px;
+        }
+
+        .level-indicator {
+            background: linear-gradient(145deg, #FFD54F, #FFA000);
+            padding: 8px 20px;
+            border-radius: 20px;
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 1.1rem;
+            color: #5D4037;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        /* Main Container */
+        .game-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+            justify-content: center;
+        }
+
+        /* Maze Section */
+        .maze-section {
+            background: rgba(255,255,255,0.95);
+            border-radius: 25px;
+            padding: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            flex: 1;
+            min-width: 320px;
+            max-width: 500px;
+        }
+
+        .maze-title {
+            text-align: center;
+            font-size: 1.5rem;
+            color: #5C6BC0;
+            margin-bottom: 15px;
+        }
+
+        .maze-grid {
+            display: grid;
+            gap: 3px;
+            margin: 0 auto;
+            padding: 10px;
+            background: #37474F;
+            border-radius: 15px;
+            width: fit-content;
+            position: relative;
+        }
+
+        .tile {
+            width: 55px;
+            height: 55px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.8rem;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .tile-path {
+            background: linear-gradient(145deg, #A5D6A7, #81C784);
+            box-shadow: inset 0 2px 4px rgba(255,255,255,0.5);
+        }
+
+        .tile-wall {
+            background: linear-gradient(145deg, #8D6E63, #6D4C41);
+            box-shadow: inset 0 -3px 0 #4E342E;
+        }
+
+        .tile-wall::after {
+            content: '🧱';
+            font-size: 1.5rem;
+        }
+
+        .tile-lava {
+            background: linear-gradient(145deg, #FF7043, #F4511E);
+            animation: lavaGlow 1s ease-in-out infinite alternate;
+            box-shadow: 0 0 15px #FF5722;
+        }
+
+        .tile-lava::after {
+            content: '🔥';
+            font-size: 1.5rem;
+            animation: flicker 0.5s ease-in-out infinite;
+        }
+
+        @keyframes lavaGlow {
+            0% { box-shadow: 0 0 10px #FF5722; }
+            100% { box-shadow: 0 0 25px #FF5722, 0 0 35px #FF9800; }
+        }
+
+        @keyframes flicker {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1) rotate(5deg); }
+        }
+
+        .tile-start {
+            background: linear-gradient(145deg, #64B5F6, #42A5F5);
+            box-shadow: 0 0 15px #2196F3;
+        }
+
+        .tile-start::before {
+            content: '⭐';
+            font-size: 1.2rem;
+            position: absolute;
+            top: 2px;
+            right: 5px;
+            animation: starPulse 1s ease-in-out infinite;
+        }
+
+        @keyframes starPulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.3); opacity: 0.7; }
+        }
+
+        /* Portal Styles */
+        .tile-portal-wonderland {
+            background: linear-gradient(145deg, #F48FB1, #EC407A);
+            animation: portalPulse 2s ease-in-out infinite;
+            box-shadow: 0 0 20px #E91E63;
+        }
+
+        .tile-portal-creative {
+            background: linear-gradient(145deg, #B39DDB, #7E57C2);
+            animation: portalPulse 2s ease-in-out infinite;
+            box-shadow: 0 0 20px #9C27B0;
+        }
+
+        @keyframes portalPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .portal-icons {
+            font-size: 0.9rem;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1px;
+        }
+
+        /* Character Styles */
+        .character {
+            position: absolute;
+            width: 45px;
+            height: 45px;
+            transition: left 0.4s ease, top 0.4s ease, transform 0.3s ease;
+            z-index: 10;
+            pointer-events: none;
+            left: 0;
+            top: 0;
+        }
+
+        .character-body {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        /* Cute Character - Baby Yoda/Grogu inspired */
+        .grogu {
+            position: relative;
+            width: 45px;
+            height: 45px;
+        }
+
+        .grogu-head {
+            width: 35px;
+            height: 30px;
+            background: linear-gradient(145deg, #8BC34A, #689F38);
+            border-radius: 50% 50% 45% 45%;
+            position: absolute;
+            top: 2px;
+            left: 5px;
+            box-shadow: inset -3px -3px 0 rgba(0,0,0,0.1);
+        }
+
+        .grogu-ear {
+            width: 18px;
+            height: 10px;
+            background: linear-gradient(145deg, #8BC34A, #689F38);
+            border-radius: 50%;
+            position: absolute;
+            top: 10px;
+        }
+
+        .grogu-ear.left {
+            left: -8px;
+            transform: rotate(-30deg);
+        }
+
+        .grogu-ear.right {
+            right: -8px;
+            transform: rotate(30deg);
+        }
+
+        .grogu-eye {
+            width: 10px;
+            height: 12px;
+            background: #1a1a1a;
+            border-radius: 50%;
+            position: absolute;
+            top: 10px;
+            box-shadow: inset 2px 2px 0 rgba(255,255,255,0.3);
+        }
+
+        .grogu-eye.left {
+            left: 6px;
+        }
+
+        .grogu-eye.right {
+            right: 6px;
+        }
+
+        .grogu-eye::after {
+            content: '';
+            width: 4px;
+            height: 4px;
+            background: #fff;
+            border-radius: 50%;
+            position: absolute;
+            top: 2px;
+            left: 2px;
+        }
+
+        .grogu-body {
+            width: 25px;
+            height: 18px;
+            background: linear-gradient(145deg, #D7CCC8, #A1887F);
+            border-radius: 8px 8px 12px 12px;
+            position: absolute;
+            bottom: 0;
+            left: 10px;
+        }
+
+        /* Character animations */
+        .character.idle .grogu-head {
+            animation: idleBob 2s ease-in-out infinite;
+        }
+
+        @keyframes idleBob {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-2px); }
+        }
+
+        .character.walking .grogu {
+            animation: walking 0.3s ease-in-out infinite;
+        }
+
+        @keyframes walking {
+            0%, 100% { transform: translateY(0) rotate(-3deg); }
+            50% { transform: translateY(-5px) rotate(3deg); }
+        }
+
+        .character.jumping .grogu {
+            animation: jumping 0.5s ease-out;
+        }
+
+        @keyframes jumping {
+            0% { transform: translateY(0) scale(1); }
+            40% { transform: translateY(-25px) scale(1.1); }
+            100% { transform: translateY(0) scale(1); }
+        }
+
+        .character.bumping .grogu {
+            animation: bump 0.6s ease;
+        }
+
+        @keyframes bump {
+            0%, 100% { transform: translateX(0) rotate(0deg); }
+            15% { transform: translateX(-12px) rotate(-5deg); }
+            30% { transform: translateX(12px) rotate(5deg); }
+            45% { transform: translateX(-8px) rotate(-3deg); }
+            60% { transform: translateX(8px) rotate(3deg); }
+            75% { transform: translateX(-4px); }
+            90% { transform: translateX(4px); }
+        }
+
+        .character.hurt .grogu {
+            animation: hurt 0.7s ease;
+        }
+
+        .character.hurt .grogu-head {
+            background: linear-gradient(145deg, #FF6B6B, #E53935) !important;
+        }
+
+        @keyframes hurt {
+            0%, 100% { transform: scale(1); }
+            20% { transform: scale(0.85) rotate(-15deg); }
+            40% { transform: scale(1.15) rotate(10deg); }
+            60% { transform: scale(0.9) rotate(-10deg); }
+            80% { transform: scale(1.1) rotate(5deg); }
+        }
+
+        /* Direction indicators */
+        .direction-arrow {
+            position: absolute;
+            bottom: -5px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.8rem;
+            opacity: 0.8;
+        }
+
+        /* Code Editor Section */
+        .code-section {
+            background: rgba(255,255,255,0.95);
+            border-radius: 25px;
+            padding: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            flex: 1;
+            min-width: 320px;
+            max-width: 450px;
+        }
+
+        .code-title {
+            text-align: center;
+            font-size: 1.5rem;
+            color: #5C6BC0;
+            margin-bottom: 15px;
+        }
+
+        /* Command Buttons */
+        .command-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .cmd-btn {
+            padding: 12px 8px;
+            font-size: 1rem;
+            font-family: inherit;
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .cmd-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+
+        .cmd-btn:active {
+            transform: translateY(0);
+        }
+
+        .cmd-btn .icon {
+            font-size: 1.8rem;
+        }
+
+        .cmd-btn.walk-forward {
+            background: linear-gradient(145deg, #66BB6A, #43A047);
+            color: white;
+        }
+
+        .cmd-btn.walk-backward {
+            background: linear-gradient(145deg, #FFA726, #FB8C00);
+            color: white;
+        }
+
+        .cmd-btn.jump {
+            background: linear-gradient(145deg, #EF5350, #E53935);
+            color: white;
+        }
+
+        .cmd-btn.turn-right {
+            background: linear-gradient(145deg, #42A5F5, #1E88E5);
+            color: white;
+        }
+
+        .cmd-btn.turn-left {
+            background: linear-gradient(145deg, #AB47BC, #8E24AA);
+            color: white;
+        }
+
+        .cmd-btn.turn-around {
+            background: linear-gradient(145deg, #26C6DA, #00ACC1);
+            color: white;
+        }
+
+        /* Code Editor */
+        .code-editor {
+            background: #263238;
+            border-radius: 15px;
+            padding: 15px;
+            min-height: 150px;
+            max-height: 250px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            box-shadow: inset 0 2px 10px rgba(0,0,0,0.3);
+        }
+
+        .code-line {
+            display: flex;
+            align-items: center;
+            padding: 5px 0;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .code-line.executing {
+            background: rgba(255, 235, 59, 0.3);
+            border-radius: 8px;
+            padding-left: 5px;
+            margin-left: -5px;
+        }
+
+        .code-line.executed {
+            opacity: 0.5;
+        }
+
+        .line-number {
+            color: #78909C;
+            width: 30px;
+            text-align: right;
+            margin-right: 10px;
+            font-family: monospace;
+        }
+
+        .line-text {
+            color: #80CBC4;
+            font-family: 'Comic Sans MS', cursive;
+        }
+
+        .code-editor-empty {
+            color: #78909C;
+            font-style: italic;
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 1.1rem;
+        }
+
+        /* Action Buttons */
+        .action-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .action-btn {
+            padding: 15px 25px;
+            font-size: 1.2rem;
+            font-family: inherit;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s ease;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.25);
+        }
+
+        .action-btn:hover {
+            transform: translateY(-3px) scale(1.02);
+        }
+
+        .action-btn:active {
+            transform: translateY(0);
+        }
+
+        .action-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .run-btn {
+            background: linear-gradient(145deg, #4CAF50, #388E3C);
+            color: white;
+            animation: runPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes runPulse {
+            0%, 100% { box-shadow: 0 5px 20px rgba(76, 175, 80, 0.4); }
+            50% { box-shadow: 0 5px 30px rgba(76, 175, 80, 0.7); }
+        }
+
+        .clear-btn {
+            background: linear-gradient(145deg, #FF7043, #E64A19);
+            color: white;
+        }
+
+        .reset-btn {
+            background: linear-gradient(145deg, #42A5F5, #1976D2);
+            color: white;
+        }
+
+        .next-btn {
+            background: linear-gradient(145deg, #FFD54F, #FFC107);
+            color: #5D4037;
+        }
+
+        /* Modal Overlays */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal {
+            background: white;
+            border-radius: 30px;
+            padding: 40px;
+            text-align: center;
+            max-width: 90%;
+            animation: modalPop 0.5s ease;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+        }
+
+        @keyframes modalPop {
+            0% { transform: scale(0.5); opacity: 0; }
+            70% { transform: scale(1.1); }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .modal-success {
+            border: 5px solid #4CAF50;
+        }
+
+        .modal-fail {
+            border: 5px solid #FF5722;
+        }
+
+        .modal h2 {
+            font-size: 2rem;
+            margin-bottom: 15px;
+        }
+
+        .modal-success h2 {
+            color: #4CAF50;
+        }
+
+        .modal-fail h2 {
+            color: #FF5722;
+        }
+
+        .modal p {
+            font-size: 1.3rem;
+            color: #666;
+            margin-bottom: 20px;
+        }
+
+        .modal .emoji {
+            font-size: 4rem;
+            margin-bottom: 15px;
+            display: block;
+        }
+
+        .modal-btn {
+            padding: 15px 30px;
+            font-size: 1.3rem;
+            font-family: inherit;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            margin: 5px;
+            transition: all 0.2s ease;
+        }
+
+        .modal-btn:hover {
+            transform: scale(1.05);
+        }
+
+        .modal-btn.primary {
+            background: linear-gradient(145deg, #4CAF50, #388E3C);
+            color: white;
+        }
+
+        .modal-btn.secondary {
+            background: linear-gradient(145deg, #9E9E9E, #757575);
+            color: white;
+        }
+
+        /* Confetti */
+        .confetti {
+            position: fixed;
+            width: 15px;
+            height: 15px;
+            top: -20px;
+            z-index: 1001;
+            animation: confettiFall 3s ease-out forwards;
+        }
+
+        @keyframes confettiFall {
+            0% {
+                transform: translateY(0) rotate(0deg);
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(100vh) rotate(720deg);
+                opacity: 0;
+            }
+        }
+
+        /* Legend */
+        .legend {
+            margin-top: 15px;
+            padding: 10px;
+            background: #F5F5F5;
+            border-radius: 15px;
+        }
+
+        .legend-title {
+            font-size: 1rem;
+            color: #666;
+            margin-bottom: 8px;
+        }
+
+        .legend-items {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.9rem;
+            color: #555;
+        }
+
+        .legend-color {
+            width: 25px;
+            height: 25px;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8rem;
+            }
+
+            .tile {
+                width: 45px;
+                height: 45px;
+            }
+
+            .character {
+                width: 38px;
+                height: 38px;
+            }
+
+            .grogu {
+                transform: scale(0.85);
+            }
+
+            .cmd-btn {
+                padding: 10px 5px;
+                font-size: 0.85rem;
+            }
+
+            .cmd-btn .icon {
+                font-size: 1.5rem;
+            }
+
+            .action-btn {
+                padding: 12px 18px;
+                font-size: 1rem;
+            }
+
+            .code-editor {
+                min-height: 120px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .game-container {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .tile {
+                width: 40px;
+                height: 40px;
+            }
+
+            .character {
+                width: 32px;
+                height: 32px;
+            }
+
+            .grogu {
+                transform: scale(0.75);
+            }
+
+            .command-buttons {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            .cmd-btn {
+                padding: 8px 4px;
+                font-size: 0.75rem;
+            }
+        }
+
+        /* Instructions panel */
+        .instructions {
+            background: rgba(255,255,255,0.9);
+            border-radius: 15px;
+            padding: 15px;
+            margin-top: 15px;
+            text-align: center;
+        }
+
+        .instructions h3 {
+            color: #5C6BC0;
+            margin-bottom: 10px;
+            font-size: 1.2rem;
+        }
+
+        .instructions p {
+            color: #666;
+            font-size: 1rem;
+            line-height: 1.5;
+        }
+
+        /* Portal labels */
+        .portal-label {
+            position: absolute;
+            bottom: -22px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 0.65rem;
+            white-space: nowrap;
+            color: #fff;
+            background: rgba(0,0,0,0.6);
+            padding: 2px 6px;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>✨ Sami's Maze ✨</h1>
+        <p class="subtitle">Learn to code with your cute friend!</p>
+        <div class="level-indicator">
+            <span id="level-display">🌟 Level 1 - Let's Begin!</span>
+        </div>
+    </header>
+
+    <main class="game-container">
+        <section class="maze-section">
+            <h2 class="maze-title">🗺️ The Maze</h2>
+            <div class="maze-grid" id="maze-grid">
+                <!-- Maze tiles will be generated here -->
+            </div>
+            <div class="legend">
+                <div class="legend-title">What's on the map?</div>
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(145deg, #A5D6A7, #81C784);">🚶</div>
+                        <span>Path</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(145deg, #8D6E63, #6D4C41);">🧱</div>
+                        <span>Wall</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(145deg, #FF7043, #F4511E);">🔥</div>
+                        <span>Lava (Jump!)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(145deg, #F48FB1, #EC407A);">🎡</div>
+                        <span>Wonderland</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: linear-gradient(145deg, #B39DDB, #7E57C2);">🎨</div>
+                        <span>Creative</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="code-section">
+            <h2 class="code-title">📝 Your Code</h2>
+
+            <div class="command-buttons">
+                <button class="cmd-btn walk-forward" onclick="addCommand('WALK FORWARD')">
+                    <span class="icon">⬆️</span>
+                    <span>WALK FORWARD</span>
+                </button>
+                <button class="cmd-btn walk-backward" onclick="addCommand('WALK BACKWARD')">
+                    <span class="icon">⬇️</span>
+                    <span>WALK BACKWARD</span>
+                </button>
+                <button class="cmd-btn turn-left" onclick="addCommand('TURN LEFT')">
+                    <span class="icon">↩️</span>
+                    <span>TURN LEFT</span>
+                </button>
+                <button class="cmd-btn turn-right" onclick="addCommand('TURN RIGHT')">
+                    <span class="icon">↪️</span>
+                    <span>TURN RIGHT</span>
+                </button>
+                <button class="cmd-btn jump" onclick="addCommand('JUMP OVER LAVA')">
+                    <span class="icon">🦘</span>
+                    <span>JUMP OVER LAVA</span>
+                </button>
+                <button class="cmd-btn turn-around" onclick="addCommand('TURN AROUND')">
+                    <span class="icon">🔄</span>
+                    <span>TURN AROUND</span>
+                </button>
+            </div>
+
+            <div class="code-editor" id="code-editor">
+                <div class="code-editor-empty">
+                    👆 Click buttons above to add commands!
+                </div>
+            </div>
+
+            <div class="action-buttons">
+                <button class="action-btn run-btn" id="run-btn" onclick="runCode()">
+                    <span>▶️</span>
+                    <span>Run Code!</span>
+                    <span>✨</span>
+                </button>
+                <button class="action-btn clear-btn" onclick="clearCode()">
+                    <span>🗑️</span>
+                    <span>Clear</span>
+                </button>
+                <button class="action-btn reset-btn" onclick="resetCharacter()">
+                    <span>🔄</span>
+                    <span>Reset</span>
+                </button>
+            </div>
+
+            <div class="instructions">
+                <h3>🎯 How to Play</h3>
+                <p>Help your cute friend reach a portal! 🌟<br>
+                Click the buttons to make a program, then press Run!</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Success Modal -->
+    <div class="modal-overlay" id="success-modal">
+        <div class="modal modal-success">
+            <span class="emoji" id="success-emoji">🎉</span>
+            <h2>Amazing!</h2>
+            <p id="success-message">You made it!</p>
+            <button class="modal-btn primary" onclick="nextLevel()">Next Level! ➡️</button>
+            <button class="modal-btn secondary" onclick="closeModal('success-modal')">Play Again</button>
+        </div>
+    </div>
+
+    <!-- Fail Modal -->
+    <div class="modal-overlay" id="fail-modal">
+        <div class="modal modal-fail">
+            <span class="emoji">😅</span>
+            <h2>Oops!</h2>
+            <p id="fail-message">Let's try again!</p>
+            <button class="modal-btn primary" onclick="resetCharacter(); closeModal('fail-modal')">Try Again! 💪</button>
+        </div>
+    </div>
+
+    <script>
+        // Game State
+        let currentLevel = 1;
+        let commands = [];
+        let isRunning = false;
+        let characterPos = { x: 0, y: 0 };
+        let characterDir = 0; // 0: up, 1: right, 2: down, 3: left
+        let startPos = { x: 0, y: 0 };
+        let currentMaze = [];
+
+        // Direction vectors
+        const directions = [
+            { dx: 0, dy: -1 }, // up
+            { dx: 1, dy: 0 },  // right
+            { dx: 0, dy: 1 },  // down
+            { dx: -1, dy: 0 }  // left
+        ];
+
+        // Tile types
+        const TILE = {
+            PATH: 0,
+            WALL: 1,
+            LAVA: 2,
+            START: 3,
+            PORTAL_WONDERLAND: 4,
+            PORTAL_CREATIVE: 5
+        };
+
+        // Level definitions
+        const levels = [
+            {
+                name: "Let's Begin!",
+                maze: [
+                    [1, 1, 1, 1, 4],
+                    [1, 0, 0, 0, 0],
+                    [1, 0, 1, 1, 1],
+                    [1, 0, 0, 0, 1],
+                    [3, 0, 1, 5, 1]
+                ],
+                startDir: 0 // facing up
+            },
+            {
+                name: "Turn Time!",
+                maze: [
+                    [1, 1, 4, 1, 1, 1],
+                    [1, 1, 0, 1, 1, 1],
+                    [1, 1, 0, 0, 0, 5],
+                    [1, 1, 0, 1, 1, 1],
+                    [1, 1, 0, 1, 1, 1],
+                    [3, 0, 0, 1, 1, 1]
+                ],
+                startDir: 0
+            },
+            {
+                name: "Jump the Lava!",
+                maze: [
+                    [1, 4, 1, 1, 1, 1],
+                    [1, 0, 1, 1, 1, 1],
+                    [1, 0, 0, 0, 0, 5],
+                    [1, 0, 1, 1, 2, 1],
+                    [1, 0, 1, 1, 0, 1],
+                    [3, 0, 0, 0, 0, 1]
+                ],
+                startDir: 0
+            },
+            {
+                name: "Lava Challenge!",
+                maze: [
+                    [1, 1, 1, 4, 1, 1, 1],
+                    [1, 1, 1, 0, 1, 1, 1],
+                    [5, 0, 2, 0, 1, 1, 1],
+                    [1, 1, 1, 0, 0, 0, 1],
+                    [1, 1, 1, 1, 1, 2, 1],
+                    [1, 0, 0, 0, 0, 0, 1],
+                    [1, 0, 1, 1, 1, 3, 1]
+                ],
+                startDir: 0
+            },
+            {
+                name: "Master Coder!",
+                maze: [
+                    [4, 0, 0, 2, 0, 0, 5],
+                    [1, 1, 1, 1, 1, 1, 0],
+                    [0, 0, 0, 0, 0, 1, 0],
+                    [0, 1, 1, 1, 0, 1, 0],
+                    [0, 1, 3, 0, 0, 1, 2],
+                    [0, 1, 1, 1, 1, 1, 0],
+                    [0, 0, 0, 2, 0, 0, 0]
+                ],
+                startDir: 0
+            }
+        ];
+
+        // Initialize the game
+        function init() {
+            loadLevel(currentLevel);
+        }
+
+        // Load a specific level
+        function loadLevel(levelNum) {
+            currentLevel = levelNum;
+            const level = levels[Math.min(levelNum - 1, levels.length - 1)];
+            currentMaze = JSON.parse(JSON.stringify(level.maze)); // Deep copy
+            characterDir = level.startDir;
+
+            // Find start position
+            for (let y = 0; y < currentMaze.length; y++) {
+                for (let x = 0; x < currentMaze[y].length; x++) {
+                    if (currentMaze[y][x] === TILE.START) {
+                        startPos = { x, y };
+                        characterPos = { x, y };
+                    }
+                }
+            }
+
+            document.getElementById('level-display').textContent = `🌟 Level ${levelNum} - ${level.name}`;
+
+            renderMaze();
+            clearCode();
+        }
+
+        // Render the maze
+        function renderMaze() {
+            const grid = document.getElementById('maze-grid');
+            grid.innerHTML = '';
+
+            const rows = currentMaze.length;
+            const cols = currentMaze[0].length;
+            grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    const tile = document.createElement('div');
+                    tile.className = 'tile';
+                    tile.dataset.x = x;
+                    tile.dataset.y = y;
+
+                    switch (currentMaze[y][x]) {
+                        case TILE.PATH:
+                            tile.classList.add('tile-path');
+                            break;
+                        case TILE.WALL:
+                            tile.classList.add('tile-wall');
+                            break;
+                        case TILE.LAVA:
+                            tile.classList.add('tile-lava');
+                            break;
+                        case TILE.START:
+                            tile.classList.add('tile-path', 'tile-start');
+                            break;
+                        case TILE.PORTAL_WONDERLAND:
+                            tile.classList.add('tile-portal-wonderland');
+                            tile.innerHTML = `<div class="portal-icons">🎡🎢🎠🍭</div><span class="portal-label">Wonderland</span>`;
+                            break;
+                        case TILE.PORTAL_CREATIVE:
+                            tile.classList.add('tile-portal-creative');
+                            tile.innerHTML = `<div class="portal-icons">🎨🔬🔧🖌️</div><span class="portal-label">Creative</span>`;
+                            break;
+                    }
+
+                    grid.appendChild(tile);
+                }
+            }
+
+            // Add character
+            const characterEl = document.createElement('div');
+            characterEl.className = 'character idle';
+            characterEl.id = 'character';
+            characterEl.innerHTML = `
+                <div class="character-body">
+                    <div class="grogu">
+                        <div class="grogu-head">
+                            <div class="grogu-ear left"></div>
+                            <div class="grogu-ear right"></div>
+                            <div class="grogu-eye left"></div>
+                            <div class="grogu-eye right"></div>
+                        </div>
+                        <div class="grogu-body"></div>
+                    </div>
+                </div>
+                <div class="direction-arrow" id="dir-arrow">▲</div>
+            `;
+            grid.appendChild(characterEl);
+
+            // Use double requestAnimationFrame to ensure DOM is fully rendered
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    updateCharacterPosition();
+                    updateCharacterDirection();
+                });
+            });
+        }
+
+        // Update character position on screen
+        function updateCharacterPosition() {
+            const pos = getTilePosition(characterPos.x, characterPos.y);
+            animateCharacterTo(pos.x, pos.y);
+        }
+
+        // Update character direction arrow
+        function updateCharacterDirection() {
+            const arrow = document.getElementById('dir-arrow');
+            const arrows = ['▲', '▶', '▼', '◀'];
+            if (arrow) {
+                arrow.textContent = arrows[characterDir];
+            }
+
+            // Rotate character visually
+            const character = document.getElementById('character');
+            if (character) {
+                character.style.transform = `rotate(${characterDir * 90}deg)`;
+            }
+        }
+
+        // Add command to code editor
+        function addCommand(cmd) {
+            if (isRunning) return;
+
+            commands.push(cmd);
+            renderCode();
+        }
+
+        // Render code in editor
+        function renderCode() {
+            const editor = document.getElementById('code-editor');
+
+            if (commands.length === 0) {
+                editor.innerHTML = '<div class="code-editor-empty">👆 Click buttons above to add commands!</div>';
+                return;
+            }
+
+            editor.innerHTML = commands.map((cmd, i) => `
+                <div class="code-line" id="code-line-${i}">
+                    <span class="line-number">${i + 1}</span>
+                    <span class="line-text">${cmd}</span>
+                </div>
+            `).join('');
+        }
+
+        // Clear all code
+        function clearCode() {
+            if (isRunning) return;
+            commands = [];
+            renderCode();
+        }
+
+        // Reset character to start
+        function resetCharacter() {
+            if (isRunning) return;
+
+            characterPos = { ...startPos };
+            characterDir = levels[Math.min(currentLevel - 1, levels.length - 1)].startDir;
+
+            updateCharacterPosition();
+            updateCharacterDirection();
+
+            // Reset code line highlighting
+            document.querySelectorAll('.code-line').forEach(line => {
+                line.classList.remove('executing', 'executed');
+            });
+
+            const character = document.getElementById('character');
+            if (character) {
+                character.classList.remove('walking', 'jumping');
+                character.classList.add('idle');
+            }
+        }
+
+        // Run the code
+        async function runCode() {
+            if (isRunning || commands.length === 0) return;
+
+            isRunning = true;
+            document.getElementById('run-btn').disabled = true;
+
+            resetCharacter();
+
+            // Give user time to see the starting position
+            await sleep(800);
+
+            const character = document.getElementById('character');
+            let finalResult = { success: true, message: '' };
+            let reachedPortal = null;
+
+            for (let i = 0; i < commands.length; i++) {
+                // Highlight current line
+                const line = document.getElementById(`code-line-${i}`);
+                if (line) {
+                    line.classList.add('executing');
+                }
+
+                // Small pause before executing command so kids can see which line is active
+                await sleep(400);
+
+                const result = await executeCommand(commands[i]);
+
+                if (line) {
+                    line.classList.remove('executing');
+                    line.classList.add('executed');
+                }
+
+                if (!result.success) {
+                    finalResult = result;
+                    break;
+                }
+
+                // Check for win but don't show modal yet
+                const currentTile = currentMaze[characterPos.y][characterPos.x];
+                if (currentTile === TILE.PORTAL_WONDERLAND || currentTile === TILE.PORTAL_CREATIVE) {
+                    reachedPortal = currentTile === TILE.PORTAL_WONDERLAND ? 'Wonderland' : 'Creative';
+                    // Continue to allow remaining commands to highlight as executed
+                }
+
+                await sleep(500);
+            }
+
+            // Reset character animation state
+            character.classList.remove('walking', 'jumping');
+            character.classList.add('idle');
+
+            // Wait a moment for the character to settle in final position
+            await sleep(500);
+
+            // Now show the appropriate modal
+            if (!finalResult.success) {
+                showFailModal(finalResult.message);
+            } else if (reachedPortal) {
+                showSuccessModal(reachedPortal);
+            } else {
+                // Completed all commands but didn't reach a portal
+                showFailModal("You ran out of commands! Try adding more steps to reach a portal! 🎯");
+            }
+
+            isRunning = false;
+            document.getElementById('run-btn').disabled = false;
+        }
+
+        // Execute a single command
+        async function executeCommand(cmd) {
+            const character = document.getElementById('character');
+
+            switch (cmd) {
+                case 'WALK FORWARD':
+                    character.classList.remove('idle');
+                    character.classList.add('walking');
+                    return await moveCharacter(1);
+
+                case 'WALK BACKWARD':
+                    character.classList.remove('idle');
+                    character.classList.add('walking');
+                    return await moveCharacter(-1);
+
+                case 'JUMP OVER LAVA':
+                    character.classList.remove('idle');
+                    character.classList.add('jumping');
+                    return await jumpCharacter();
+
+                case 'TURN RIGHT':
+                    characterDir = (characterDir + 1) % 4;
+                    updateCharacterDirection();
+                    await sleep(400);
+                    return { success: true };
+
+                case 'TURN LEFT':
+                    characterDir = (characterDir + 3) % 4;
+                    updateCharacterDirection();
+                    await sleep(400);
+                    return { success: true };
+
+                case 'TURN AROUND':
+                    characterDir = (characterDir + 2) % 4;
+                    updateCharacterDirection();
+                    await sleep(400);
+                    return { success: true };
+
+                default:
+                    return { success: false, message: 'Unknown command!' };
+            }
+        }
+
+        // Animate character to a specific pixel position
+        async function animateCharacterTo(x, y) {
+            const character = document.getElementById('character');
+            if (character) {
+                console.log('Moving character to:', x, y);
+                character.style.left = Math.round(x) + 'px';
+                character.style.top = Math.round(y) + 'px';
+            }
+        }
+
+        // Get pixel position for a tile
+        function getTilePosition(x, y) {
+            const tile = document.querySelector(`.tile[data-x="${x}"][data-y="${y}"]`);
+            const character = document.getElementById('character');
+            console.log('getTilePosition for', x, y, '- tile found:', !!tile, '- character found:', !!character);
+            if (tile && character) {
+                const charWidth = character.offsetWidth || 45;
+                const charHeight = character.offsetHeight || 45;
+                const pos = {
+                    x: tile.offsetLeft + tile.offsetWidth / 2 - charWidth / 2,
+                    y: tile.offsetTop + tile.offsetHeight / 2 - charHeight / 2
+                };
+                console.log('Calculated position:', pos, 'tile offset:', tile.offsetLeft, tile.offsetTop);
+                return pos;
+            }
+            // Fallback: calculate based on tile size and position
+            console.log('Using fallback position calculation');
+            const tileSize = 55;
+            const gap = 3;
+            const padding = 10;
+            return {
+                x: padding + x * (tileSize + gap) + tileSize / 2 - 22,
+                y: padding + y * (tileSize + gap) + tileSize / 2 - 22
+            };
+        }
+
+        // Show bump animation (shake)
+        async function showBumpAnimation() {
+            const character = document.getElementById('character');
+            character.classList.add('bumping');
+            await sleep(700);
+            character.classList.remove('bumping');
+        }
+
+        // Move character forward/backward
+        async function moveCharacter(direction) {
+            const dir = directions[characterDir];
+            const newX = characterPos.x + dir.dx * direction;
+            const newY = characterPos.y + dir.dy * direction;
+
+            // Get current position
+            const currentPos = getTilePosition(characterPos.x, characterPos.y);
+
+            // Check bounds - animate bump at edge
+            if (newX < 0 || newX >= currentMaze[0].length || newY < 0 || newY >= currentMaze.length) {
+                // Animate partial move toward edge then bounce back
+                const partialX = currentPos.x + dir.dx * direction * 20;
+                const partialY = currentPos.y + dir.dy * direction * 20;
+                await animateCharacterTo(partialX, partialY);
+                await sleep(350);
+                await animateCharacterTo(currentPos.x, currentPos.y);
+                await sleep(200);
+                await showBumpAnimation();
+                return { success: false, message: "Oops! You can't walk off the map!" };
+            }
+
+            const targetTile = currentMaze[newY][newX];
+
+            // Check for wall - animate bump into wall
+            if (targetTile === TILE.WALL) {
+                const targetPos = getTilePosition(newX, newY);
+                // Move partway toward wall
+                const partialX = currentPos.x + (targetPos.x - currentPos.x) * 0.5;
+                const partialY = currentPos.y + (targetPos.y - currentPos.y) * 0.5;
+                await animateCharacterTo(partialX, partialY);
+                await sleep(350);
+                // Bounce back
+                await animateCharacterTo(currentPos.x, currentPos.y);
+                await sleep(200);
+                await showBumpAnimation();
+                return { success: false, message: "Oops! You bumped into a wall! 🧱" };
+            }
+
+            // Check for lava - animate walking into lava (ouch!)
+            if (targetTile === TILE.LAVA) {
+                const targetPos = getTilePosition(newX, newY);
+                // Actually move to lava tile
+                characterPos = { x: newX, y: newY };
+                await animateCharacterTo(targetPos.x, targetPos.y);
+                await sleep(400);
+                // Show hurt animation
+                const character = document.getElementById('character');
+                character.classList.add('hurt');
+                await sleep(800);
+                character.classList.remove('hurt');
+                return { success: false, message: "Oh no! You walked into lava! 🔥 Try using JUMP!" };
+            }
+
+            // Move is valid - animate to new position
+            const targetPos = getTilePosition(newX, newY);
+            characterPos = { x: newX, y: newY };
+            await animateCharacterTo(targetPos.x, targetPos.y);
+            await sleep(400);
+
+            return { success: true };
+        }
+
+        // Jump over lava
+        async function jumpCharacter() {
+            const character = document.getElementById('character');
+            const dir = directions[characterDir];
+            const lavaX = characterPos.x + dir.dx;
+            const lavaY = characterPos.y + dir.dy;
+            const landX = characterPos.x + dir.dx * 2;
+            const landY = characterPos.y + dir.dy * 2;
+
+            const currentPos = getTilePosition(characterPos.x, characterPos.y);
+
+            // Check if there's lava ahead
+            if (lavaX < 0 || lavaX >= currentMaze[0].length || lavaY < 0 || lavaY >= currentMaze.length) {
+                await showBumpAnimation();
+                return { success: false, message: "There's nothing to jump over!" };
+            }
+
+            const lavaTile = currentMaze[lavaY][lavaX];
+            if (lavaTile !== TILE.LAVA) {
+                await showBumpAnimation();
+                return { success: false, message: "You don't need to jump here! Try walking instead." };
+            }
+
+            // Check landing spot
+            if (landX < 0 || landX >= currentMaze[0].length || landY < 0 || landY >= currentMaze.length) {
+                // Animate jump attempt but fall short
+                character.classList.add('jumping');
+                await sleep(300);
+                character.classList.remove('jumping');
+                return { success: false, message: "You can't jump off the map!" };
+            }
+
+            const landTile = currentMaze[landY][landX];
+            if (landTile === TILE.WALL) {
+                character.classList.add('jumping');
+                await sleep(300);
+                character.classList.remove('jumping');
+                await showBumpAnimation();
+                return { success: false, message: "You can't land on a wall!" };
+            }
+            if (landTile === TILE.LAVA) {
+                // Jump but land in more lava
+                const lavaPos = getTilePosition(lavaX, lavaY);
+                character.classList.add('jumping');
+                characterPos = { x: lavaX, y: lavaY };
+                await animateCharacterTo(lavaPos.x, lavaPos.y);
+                await sleep(400);
+                character.classList.remove('jumping');
+                character.classList.add('hurt');
+                await sleep(500);
+                character.classList.remove('hurt');
+                return { success: false, message: "You can't jump that far! You landed in lava! 🔥" };
+            }
+
+            // Jump is valid - animate the jump arc
+            const landPos = getTilePosition(landX, landY);
+            character.classList.add('jumping');
+            characterPos = { x: landX, y: landY };
+            await animateCharacterTo(landPos.x, landPos.y);
+            await sleep(500);
+            character.classList.remove('jumping');
+
+            return { success: true };
+        }
+
+        // Show success modal
+        function showSuccessModal(portalName) {
+            const isWonderland = portalName === 'Wonderland';
+            document.getElementById('success-emoji').textContent = isWonderland ? '🎡' : '🎨';
+            document.getElementById('success-message').textContent = `You made it to ${portalName}! 🎉`;
+            document.getElementById('success-modal').classList.add('show');
+            createConfetti();
+        }
+
+        // Show fail modal
+        function showFailModal(message) {
+            document.getElementById('fail-message').textContent = message;
+            document.getElementById('fail-modal').classList.add('show');
+        }
+
+        // Close modal
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('show');
+            // Clear confetti
+            document.querySelectorAll('.confetti').forEach(c => c.remove());
+        }
+
+        // Next level
+        function nextLevel() {
+            closeModal('success-modal');
+            if (currentLevel < levels.length) {
+                loadLevel(currentLevel + 1);
+            } else {
+                // Completed all levels!
+                alert('🎉 Congratulations! You completed all levels! You are a coding master! 🌟');
+                loadLevel(1);
+            }
+        }
+
+        // Create confetti effect
+        function createConfetti() {
+            const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96E6A1', '#DDA0DD', '#F7DC6F', '#BB8FCE'];
+            const shapes = ['■', '●', '▲', '★'];
+
+            for (let i = 0; i < 50; i++) {
+                const confetti = document.createElement('div');
+                confetti.className = 'confetti';
+                confetti.style.left = Math.random() * 100 + 'vw';
+                confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+                confetti.style.animationDuration = (Math.random() * 2 + 2) + 's';
+                confetti.style.animationDelay = Math.random() * 0.5 + 's';
+                confetti.textContent = shapes[Math.floor(Math.random() * shapes.length)];
+                confetti.style.fontSize = (Math.random() * 15 + 10) + 'px';
+                confetti.style.color = colors[Math.floor(Math.random() * colors.length)];
+                document.body.appendChild(confetti);
+            }
+
+            // Clean up confetti after animation
+            setTimeout(() => {
+                document.querySelectorAll('.confetti').forEach(c => c.remove());
+            }, 4000);
+        }
+
+        // Utility: sleep function
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Start the game when page loads
+        window.onload = init;
+
+        // Handle window resize
+        window.onresize = () => {
+            if (!isRunning) {
+                updateCharacterPosition();
+            }
+        };
+    </script>
+</body>
+</html>

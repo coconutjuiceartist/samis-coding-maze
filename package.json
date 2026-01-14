@@ -1,0 +1,10 @@
+{
+  "name": "samis-coding-maze",
+  "version": "1.0.0",
+  "description": "A fun coding maze game for kindergarteners to learn basic programming concepts",
+  "scripts": {
+    "start": "npx serve -l 3000"
+  },
+  "keywords": ["coding", "education", "kids", "maze", "game"],
+  "license": "MIT"
+}
