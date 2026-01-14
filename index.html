@@ -547,6 +547,11 @@
             50% { box-shadow: 0 5px 30px rgba(76, 175, 80, 0.7); }
         }
 
+        .undo-btn {
+            background: linear-gradient(145deg, #FFCA28, #FFB300);
+            color: #5D4037;
+        }
+
         .clear-btn {
             background: linear-gradient(145deg, #FF7043, #E64A19);
             color: white;
@@ -903,6 +908,10 @@
                     <span>Run Code!</span>
                     <span>✨</span>
                 </button>
+                <button class="action-btn undo-btn" onclick="undoLastCommand()">
+                    <span>⬅️</span>
+                    <span>Undo</span>
+                </button>
                 <button class="action-btn clear-btn" onclick="clearCode()">
                     <span>🗑️</span>
                     <span>Clear</span>
@@ -1185,6 +1194,13 @@
         function clearCode() {
             if (isRunning) return;
             commands = [];
+            renderCode();
+        }
+
+        // Undo last command
+        function undoLastCommand() {
+            if (isRunning || commands.length === 0) return;
+            commands.pop();
             renderCode();
         }
 
