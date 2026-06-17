@@ -68,45 +68,77 @@ def fit_skew(df: pd.DataFrame, deg: int = 2) -> pd.DataFrame:
     return out.drop(columns=[c for c in ("_grp",) if c in out.columns])
 
 
-def yield_risk_frontier(df: pd.DataFrame, n_bins: int = 12) -> pd.DataFrame:
+def yield_risk_frontier(df: pd.DataFrame, n_bins: int = 12):
     """Yield-vs-risk capital frontier (CLAUDE.md §4, frontier 3).
 
     Bins puts by |delta|; within each bin the max annualised CSP yield is the
-    frontier. ``value_ratio`` = a contract's yield / the frontier yield at its
-    risk bucket (>1 == pays more than peers for the same |delta|).
+    frontier. The frontier at a contract's exact |delta| is *interpolated*
+    between bin maxima (np.interp) for a smooth envelope, so ``value_ratio`` =
+    yield / interpolated-frontier-yield can exceed 1 (pays more than peers for
+    the same risk) rather than saturating at the coarse bin max.
+
+    Returns ``(scored_df, frontier_df)`` where ``frontier_df`` holds the
+    (abs_delta, csp_yield) envelope points for plotting.
     """
     out = df.copy()
     out["frontier_yield"] = np.nan
     out["value_ratio"] = np.nan
     if out.empty or "abs_delta" not in out or "csp_yield" not in out:
-        return out
+        return out, pd.DataFrame(columns=["abs_delta", "csp_yield"])
 
     mask = np.isfinite(out["abs_delta"]) & np.isfinite(out["csp_yield"]) & (out["csp_yield"] > 0)
     if mask.sum() < 2:
-        return out
+        return out, pd.DataFrame(columns=["abs_delta", "csp_yield"])
 
-    sub = out[mask]
-    edges = np.linspace(0.0, max(sub["abs_delta"].max(), 1e-6), n_bins + 1)
-    bins = np.clip(np.digitize(sub["abs_delta"], edges) - 1, 0, n_bins - 1)
-    frontier_by_bin = pd.Series(sub["csp_yield"].to_numpy()).groupby(bins).max()
-    frontier = pd.Series(bins, index=sub.index).map(frontier_by_bin)
-    out.loc[mask, "frontier_yield"] = frontier.to_numpy()
-    out.loc[mask, "value_ratio"] = (sub["csp_yield"] / frontier).to_numpy()
-    return out
+    sub = out.loc[mask, ["abs_delta", "csp_yield"]].copy()
+    sub["bin"] = pd.cut(sub["abs_delta"], bins=min(n_bins, max(2, mask.sum())))
+    frontier = (sub.groupby("bin", observed=True)
+                .agg(abs_delta=("abs_delta", "mean"), csp_yield=("csp_yield", "max"))
+                .dropna()
+                .sort_values("abs_delta"))
+    if len(frontier) < 2:
+        return out, frontier.reset_index(drop=True)
+
+    interp = np.interp(sub["abs_delta"], frontier["abs_delta"], frontier["csp_yield"])
+    out.loc[mask, "frontier_yield"] = interp
+    out.loc[mask, "value_ratio"] = (sub["csp_yield"].to_numpy() / interp)
+    return out, frontier.reset_index(drop=True)
 
 
-def add_richness(df: pd.DataFrame) -> pd.DataFrame:
+def add_richness(df: pd.DataFrame, threshold: float = 0.7) -> pd.DataFrame:
     """Composite richness = mean of standardised skew-residual and standardised
     VRP, with a categorical label (CLAUDE.md §4).
 
-    RICH (>+0.5) => premium is dear, lean sell; CHEAP (<-0.5) => lean buy.
+    Standardisation is *local* so the comparison is apples-to-apples: the skew
+    residual is z-scored within each (ticker, expiry) surface and the VRP within
+    each ticker (every name has its own realised-vol baseline). Falls back to a
+    global z-score when those grouping columns are absent.
+
+    RICH (> +threshold) => premium is dear, lean sell; CHEAP (< -threshold) =>
+    lean buy. Threshold defaults to 0.7.
     """
     out = df.copy()
-    z_skew = zscore(out["skew_resid"]) if "skew_resid" in out else pd.Series(0.0, index=out.index)
-    z_vrp = zscore(out["vrp"]) if "vrp" in out else pd.Series(0.0, index=out.index)
-    out["richness"] = (z_skew + z_vrp) / 2.0
+
+    if "skew_resid" in out:
+        if {"ticker", "expiry"}.issubset(out.columns):
+            z_skew = out.groupby(["ticker", "expiry"])["skew_resid"].transform(zscore)
+        else:
+            z_skew = zscore(out["skew_resid"])
+    else:
+        z_skew = pd.Series(0.0, index=out.index)
+
+    if "vrp" in out:
+        if "ticker" in out.columns:
+            z_vrp = out.groupby("ticker")["vrp"].transform(zscore)
+        else:
+            z_vrp = zscore(out["vrp"])
+    else:
+        z_vrp = pd.Series(0.0, index=out.index)
+
+    # Average the two standardised legs, tolerating a NaN in either.
+    out["richness"] = np.nanmean(np.vstack([z_skew.to_numpy(), z_vrp.to_numpy()]), axis=0)
     out["signal"] = np.select(
-        [out["richness"] > 0.5, out["richness"] < -0.5],
+        [out["richness"] > threshold, out["richness"] < -threshold],
         ["RICH → sell", "CHEAP → buy"],
         default="fair",
     )

@@ -29,6 +29,7 @@ def test_greeks_signs():
     assert call["delta"] > 0 and put["delta"] < 0
     assert call["gamma"] > 0 and call["vega"] > 0
     assert call["theta"] < 0  # long option decays
+    assert call["rho"] > 0 and put["rho"] < 0  # call gains, put loses as rates rise
 
 
 def test_degenerate_inputs_return_intrinsic():

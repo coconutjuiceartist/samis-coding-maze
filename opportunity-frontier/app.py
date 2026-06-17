@@ -169,12 +169,12 @@ def build_options_table(tickers, expiries_per_name, side, rv_window):
                 enr["kind"] = kind
                 rows.append(enr)
     if not rows:
-        return pd.DataFrame(), realized_by_ticker, spot_by_ticker
+        return pd.DataFrame(), realized_by_ticker, spot_by_ticker, pd.DataFrame()
     df = pd.concat(rows, ignore_index=True)
     df = V.fit_skew(df)
-    df = V.yield_risk_frontier(df)
+    df, frontier = V.yield_risk_frontier(df)
     df = V.add_richness(df)
-    return df, realized_by_ticker, spot_by_ticker
+    return df, realized_by_ticker, spot_by_ticker, frontier
 
 
 with tab1:
@@ -191,7 +191,7 @@ with tab1:
     if st.session_state.get("t1_run"):
         tickers = parse_tickers(tk_text)
         with st.spinner("Pulling chains and solving IV…"):
-            df, rv_map, spot_map = build_options_table(tickers, int(exp_n), side, rfr_window)
+            df, rv_map, spot_map, yfrontier = build_options_table(tickers, int(exp_n), side, rfr_window)
 
         st.session_state["t1_last_df"] = df
         if df.empty:
@@ -229,11 +229,10 @@ with tab1:
                 if not ydf.empty:
                     fig = px.scatter(ydf, x="abs_delta", y="csp_yield", color="ticker",
                                      hover_data=["strike", "expiry", "value_ratio", "spread_pct"])
-                    front = ydf.dropna(subset=["frontier_yield"]).sort_values("abs_delta")
-                    if not front.empty:
-                        fig.add_trace(go.Scatter(x=front["abs_delta"], y=front["frontier_yield"],
-                                                 mode="lines", name="frontier",
-                                                 line=dict(color="black")))
+                    if isinstance(yfrontier, pd.DataFrame) and len(yfrontier) > 1:
+                        fig.add_trace(go.Scatter(x=yfrontier["abs_delta"], y=yfrontier["csp_yield"],
+                                                 mode="lines+markers", name="frontier",
+                                                 line=dict(color="black", dash="dash")))
                     fig.add_hline(y=rf, line_dash="dash", annotation_text="risk-free floor")
                     fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10),
                                       yaxis_tickformat=".0%")
@@ -270,6 +269,8 @@ with tab1:
                 }, na_rep="—"),
                 use_container_width=True, height=420,
             )
+            st.download_button("⬇ Download full chain (CSV)", df.to_csv(index=False),
+                               "option_frontier.csv", "text/csv")
 
             # IV snapshot store (roadmap): persist ATM IV for future IV Rank/Percentile.
             with st.expander("IV history (local SQLite snapshots → IV Rank/Percentile)"):
@@ -439,6 +440,8 @@ with tab2:
                 }, na_rep="—"),
                 use_container_width=True, height=420,
             )
+            st.download_button("⬇ Download fundamentals (CSV)", df.to_csv(),
+                               "fundamentals_frontier.csv", "text/csv")
             st.caption(f"Data as of {stamp()} · peer-relative z-scores recompute when you change the peer set.")
 
 

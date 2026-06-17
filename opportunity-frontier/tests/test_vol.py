@@ -34,18 +34,21 @@ def test_fit_skew_residual_zero_on_quadratic():
     assert np.allclose(out["skew_resid"].to_numpy(), 0.0, atol=1e-9)
 
 
-def test_yield_risk_frontier_value_ratio_le_one():
+def test_yield_risk_frontier_returns_envelope():
     df = pd.DataFrame({
         "abs_delta": [0.1, 0.1, 0.3, 0.3, 0.5],
         "csp_yield": [0.05, 0.08, 0.10, 0.12, 0.20],
     })
-    out = V.yield_risk_frontier(df, n_bins=5)
+    out, frontier = V.yield_risk_frontier(df, n_bins=5)
     vr = out["value_ratio"].dropna()
-    assert (vr <= 1.0 + 1e-9).all()
     assert (vr > 0).all()
+    # the bin-max contracts should sit at or above the interpolated frontier
+    assert vr.max() >= 1.0 - 1e-9
+    assert {"abs_delta", "csp_yield"}.issubset(frontier.columns)
 
 
-def test_add_richness_labels():
+def test_add_richness_labels_global_fallback():
+    # No ticker/expiry columns -> global z-score fallback, default 0.7 threshold.
     df = pd.DataFrame({
         "skew_resid": [0.05, -0.05, 0.0],
         "vrp": [0.10, -0.10, 0.0],
@@ -53,6 +56,21 @@ def test_add_richness_labels():
     out = V.add_richness(df)
     assert out["signal"].iloc[0] == "RICH → sell"
     assert out["signal"].iloc[1] == "CHEAP → buy"
+    assert out["signal"].iloc[2] == "fair"
+
+
+def test_add_richness_grouped_by_surface():
+    # Per-(ticker,expiry) skew z and per-ticker VRP z.
+    df = pd.DataFrame({
+        "ticker": ["A", "A", "A", "B", "B", "B"],
+        "expiry": ["x", "x", "x", "y", "y", "y"],
+        "skew_resid": [0.04, 0.0, -0.04, 0.04, 0.0, -0.04],
+        "vrp": [0.06, 0.0, -0.06, 0.06, 0.0, -0.06],
+    })
+    out = V.add_richness(df, threshold=0.7)
+    # richest contract in each surface is flagged RICH, cheapest CHEAP
+    assert out["signal"].iloc[0] == "RICH → sell"
+    assert out["signal"].iloc[2] == "CHEAP → buy"
 
 
 def test_vix_regime_branches():

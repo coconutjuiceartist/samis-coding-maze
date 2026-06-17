@@ -10,6 +10,7 @@ Conventions for the returned Greeks:
     gamma  : per $1 move in spot
     vega   : per 1 percentage-point change in vol (i.e. raw vega / 100)
     theta  : per calendar day (i.e. annual theta / 365), negative for longs
+    rho    : per 1 percentage-point change in the rate (raw rho / 100)
 """
 from __future__ import annotations
 
@@ -63,7 +64,8 @@ def bs(
     if S <= 0 or K <= 0 or T <= 0 or sigma <= 0:
         intrinsic = max(S - K, 0.0) if is_call else max(K - S, 0.0)
         delta = (1.0 if S > K else 0.0) if is_call else (-1.0 if S < K else 0.0)
-        return {"price": intrinsic, "delta": delta, "gamma": 0.0, "vega": 0.0, "theta": 0.0}
+        return {"price": intrinsic, "delta": delta, "gamma": 0.0, "vega": 0.0,
+                "theta": 0.0, "rho": 0.0}
 
     d1, d2 = _d1_d2(S, K, T, r, sigma, q)
     sqrtT = math.sqrt(T)
@@ -79,6 +81,7 @@ def bs(
             - r * K * disc_r * _N(d2)
             + q * S * disc_q * _N(d1)
         )
+        rho = K * T * disc_r * _N(d2) / 100.0
     else:
         price = K * disc_r * _N(-d2) - S * disc_q * _N(-d1)
         delta = disc_q * (_N(d1) - 1.0)
@@ -87,6 +90,7 @@ def bs(
             + r * K * disc_r * _N(-d2)
             - q * S * disc_q * _N(-d1)
         )
+        rho = -K * T * disc_r * _N(-d2) / 100.0
 
     gamma = disc_q * pdf_d1 / (S * sigma * sqrtT)
     vega = S * disc_q * pdf_d1 * sqrtT / 100.0  # per 1 vol point
@@ -98,6 +102,7 @@ def bs(
         "gamma": gamma,
         "vega": vega,
         "theta": theta,
+        "rho": rho,
     }
 
 
@@ -209,15 +214,16 @@ def enrich_chain(
     df["iv"] = np.where(np.isfinite(solved_iv), solved_iv, yahoo_iv)
     df["iv_source"] = np.where(used_solver, "solved", "yahoo")
 
-    deltas, gammas, thetas, vegas = [], [], [], []
+    deltas, gammas, thetas, vegas, rhos = [], [], [], [], []
     for k, iv in zip(strike.to_numpy(), df["iv"].to_numpy()):
         g = bs(spot, k, T, r, iv if np.isfinite(iv) else 0.0, q, kind)
         deltas.append(g["delta"]); gammas.append(g["gamma"])
-        thetas.append(g["theta"]); vegas.append(g["vega"])
+        thetas.append(g["theta"]); vegas.append(g["vega"]); rhos.append(g["rho"])
     df["delta"] = deltas
     df["gamma"] = gammas
     df["theta"] = thetas
     df["vega"] = vegas
+    df["rho"] = rhos
     df["abs_delta"] = np.abs(df["delta"])
 
     # Annualised cash-secured-put yield (puts only; NaN for calls).
