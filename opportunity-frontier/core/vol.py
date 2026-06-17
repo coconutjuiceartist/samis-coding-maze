@@ -10,7 +10,24 @@ import numpy as np
 import pandas as pd
 
 from .options import TRADING_DAYS
-from .stats import zscore
+
+# Below this dispersion (in vol points) a group is effectively flat, so its
+# z-score is just amplified float noise — we treat it as "no signal" rather than
+# letting a clean parabolic fit manufacture spurious RICH/CHEAP flags.
+_DISPERSION_FLOOR = 1e-4
+
+
+def _floored_z(series: pd.Series) -> pd.Series:
+    """z-score that returns all-zeros when the dispersion is negligible.
+
+    Guards against dividing a near-zero residual by a near-zero std (which would
+    blow up float noise into fake signals); see ``add_richness``.
+    """
+    s = pd.to_numeric(series, errors="coerce")
+    sd = s.std(ddof=0)
+    if not np.isfinite(sd) or sd < _DISPERSION_FLOOR:
+        return pd.Series(0.0, index=s.index, dtype=float)
+    return ((s - s.mean()) / sd).fillna(0.0)
 
 
 def realized_vol(close: pd.Series, window: int) -> float:
@@ -121,17 +138,17 @@ def add_richness(df: pd.DataFrame, threshold: float = 0.7) -> pd.DataFrame:
 
     if "skew_resid" in out:
         if {"ticker", "expiry"}.issubset(out.columns):
-            z_skew = out.groupby(["ticker", "expiry"])["skew_resid"].transform(zscore)
+            z_skew = out.groupby(["ticker", "expiry"])["skew_resid"].transform(_floored_z)
         else:
-            z_skew = zscore(out["skew_resid"])
+            z_skew = _floored_z(out["skew_resid"])
     else:
         z_skew = pd.Series(0.0, index=out.index)
 
     if "vrp" in out:
         if "ticker" in out.columns:
-            z_vrp = out.groupby("ticker")["vrp"].transform(zscore)
+            z_vrp = out.groupby("ticker")["vrp"].transform(_floored_z)
         else:
-            z_vrp = zscore(out["vrp"])
+            z_vrp = _floored_z(out["vrp"])
     else:
         z_vrp = pd.Series(0.0, index=out.index)
 

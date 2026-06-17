@@ -203,11 +203,13 @@ with tab1:
     exp_n = cc[1].number_input("Expiries / name", 1, 6, 2)
     side = cc[2].selectbox("Side", ["puts", "calls", "both"], index=0)
 
-    with st.expander("Liquidity filters (a thin, wide contract can't be exited cheaply)"):
+    with st.expander("Liquidity filters — defaults target actionable contracts; loosen for exotic names"):
         fc = st.columns(3)
-        min_oi = fc[0].number_input("Min open interest", 0, 100000, 10, step=10)
+        min_oi = fc[0].number_input("Min open interest", 0, 100000, 100, step=10,
+                                    help="Open contracts at this strike. Higher = more liquid.")
         two_sided = fc[1].checkbox("Require two-sided quote (bid & ask > 0)", value=True)
-        max_spread = fc[2].slider("Max bid/ask spread %", 0, 200, 100)
+        max_spread = fc[2].slider("Max bid/ask spread %", 0, 200, 25,
+                                  help="(ask−bid)/mid. Wide spreads are costly to enter/exit.")
 
     if st.button("Scan options", type="primary"):
         st.session_state["t1_run"] = True
@@ -242,6 +244,10 @@ with tab1:
 
             # -------- Opportunities table (the actionable output, shown first) --------
             st.subheader("🎯 Opportunities (ranked by richness)")
+            only_flagged = st.checkbox(
+                "Show only flagged opportunities (hide 'fair')", value=True,
+                help="A 'fair' contract is in line with its own smile and realised vol — "
+                     "no relative-value edge. Untick to see the full filtered chain.")
             rename = {"kind": "side", "dte": "DTE", "iv": "IV", "vrp": "VRP",
                       "csp_yield": "annual_CSP_yield", "spread_pct": "spread_%",
                       "abs_delta": "|delta|", "signal": "flag", "iv_source": "IV_src"}
@@ -252,6 +258,12 @@ with tab1:
                       .replace([np.inf, -np.inf], np.nan))
             disp = disp[[c for c in order if c in disp.columns]]
             disp = disp.sort_values("richness", ascending=False, na_position="last")
+            if only_flagged:
+                disp = disp[disp["flag"] != "fair"]
+            if disp.empty:
+                st.info("No flagged opportunities in this scan — every liquid contract is fairly "
+                        "priced vs its own smile and realised vol. Untick the box above to see all, "
+                        "or widen the ticker list / expiries.")
 
             def _flag_row(row):
                 f = str(row.get("flag", ""))
@@ -259,15 +271,16 @@ with tab1:
                       else "background-color:#e3ffe6" if f.startswith("CHEAP") else "")
                 return [bg] * len(row)
 
-            st.dataframe(
-                disp.style.format({
-                    "strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
-                    "IV": "{:.1%}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
-                    "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
-                    "value_ratio": "{:.2f}", "richness": "{:.2f}", "DTE": "{:.0f}",
-                }, na_rep="—").apply(_flag_row, axis=1),
-                use_container_width=True, height=440,
-            )
+            if not disp.empty:
+                st.dataframe(
+                    disp.style.format({
+                        "strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
+                        "IV": "{:.1%}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
+                        "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
+                        "value_ratio": "{:.2f}", "richness": "{:.2f}", "DTE": "{:.0f}",
+                    }, na_rep="—").apply(_flag_row, axis=1),
+                    use_container_width=True, height=440,
+                )
             st.download_button("⬇ Download full chain (CSV)", df.to_csv(index=False),
                                "option_frontier.csv", "text/csv")
 
