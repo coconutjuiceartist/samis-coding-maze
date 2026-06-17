@@ -25,7 +25,7 @@ from core import iv_store
 from core import options as O
 from core import peers as PEERS
 from core import vol as V
-from providers import get_provider
+from providers import edgar, get_provider
 
 st.set_page_config(page_title="Opportunity Frontier", layout="wide")
 
@@ -72,6 +72,13 @@ def c_fundamentals(ticker: str) -> dict:
 @st.cache_data(ttl=SPOT_TTL, show_spinner=False)
 def c_rates_vix():
     return PROVIDER.risk_free_rate(), PROVIDER.vix()
+
+
+@st.cache_data(ttl=FUND_TTL, show_spinner=False)
+def c_edgar(ticker: str) -> dict:
+    """SEC EDGAR companyfacts bundle (clean ROIC inputs + F-score components).
+    Fails soft to {'available': False} if EDGAR hosts are not allow-listed."""
+    return edgar.fundamentals_bundle(ticker)
 
 
 def parse_tickers(text: str) -> list[str]:
@@ -318,6 +325,33 @@ def best_effort_roic(info: dict, stmts: dict, rf: float) -> tuple[float, float]:
         return float("nan"), float("nan")
 
 
+def fundamentals_quality(info: dict, rf: float, bundle: dict) -> dict:
+    """ROIC, ROIC-WACC and Piotroski F-score for one name.
+
+    Prefers SEC EDGAR (authoritative 10-K XBRL) for ROIC inputs and the
+    two-year F-score; falls back to a yfinance-derived ROIC when EDGAR is
+    unavailable (e.g. hosts not allow-listed). WACC uses the market value of
+    equity + beta from yfinance either way (EDGAR has no market data).
+    """
+    if bundle.get("available"):
+        ri = bundle["roic_inputs"]
+        roic = F.compute_roic(ri["ebit"], ri["tax_rate"], ri["total_debt"],
+                              ri["book_equity"], ri["cash"])
+        try:
+            beta = float(info.get("beta", 1.0))
+            equity_mv = float(info.get("marketCap", np.nan))
+            debt = ri["total_debt"]
+            wacc = F.compute_wacc(beta, rf, 0.05, rf + 0.015, ri["tax_rate"], equity_mv, debt)
+        except Exception:
+            wacc = float("nan")
+        spread = roic - wacc if np.isfinite(roic) and np.isfinite(wacc) else float("nan")
+        fscore = F.piotroski_fscore(bundle["fscore_curr"], bundle["fscore_prev"])
+        return {"roic": roic, "roic_minus_wacc": spread, "fscore": fscore, "roic_source": "EDGAR"}
+
+    roic, spread = best_effort_roic(info, PROVIDER.financial_statements(info.get("symbol", "")), rf)
+    return {"roic": roic, "roic_minus_wacc": spread, "fscore": float("nan"), "roic_source": "yfinance"}
+
+
 with tab2:
     st.markdown("**Which companies are outliers — high quality AND cheap — vs a peer "
                 "group.** Everything is z-scored within the peers, so the peer set frames the screen.")
@@ -348,9 +382,8 @@ with tab2:
                     continue
                 m = F.metrics_from_info(info)
                 m["ticker"] = t
-                roic, spread = best_effort_roic(info, PROVIDER.financial_statements(t), rf)
-                m["roic"] = roic
-                m["roic_minus_wacc"] = spread
+                info.setdefault("symbol", t)
+                m.update(fundamentals_quality(info, rf, c_edgar(t)))
                 recs.append(m)
         if not recs:
             st.warning("No fundamentals returned. Yahoo may be rate-limiting — try Refresh.")
@@ -374,11 +407,21 @@ with tab2:
             stars = df[df["star"]].index.tolist()
             if stars:
                 st.success("★ Outliers (high quality **and** cheap vs peers): " + ", ".join(stars))
+
+            sources = set(df.get("roic_source", pd.Series(dtype=str)).dropna())
+            if "EDGAR" in sources:
+                st.caption("ROIC inputs & Piotroski F-score sourced from **SEC EDGAR** "
+                           "(authoritative 10-K XBRL); WACC uses market equity + beta from yfinance.")
+            else:
+                st.caption("⚠️ SEC EDGAR unavailable (hosts `www.sec.gov` / `data.sec.gov` not in the "
+                           "network egress allow-list) — ROIC is a best-effort yfinance proxy and the "
+                           "F-score is blank. Allow-list those hosts to get authoritative figures.")
             st.caption("Value without quality is a trap (Marks). ROIC−WACC is the real "
-                       "value-creation axis (Damodaran); shown best-effort from yfinance.")
+                       "value-creation axis (Damodaran).")
 
             metric_cols = ["name", "Composite", "Quality", "Value", "Growth", "Safety",
-                           "MF_rank", "roic", "roic_minus_wacc", "rev_growth", "gross_margin",
+                           "MF_rank", "fscore", "roic", "roic_minus_wacc", "roic_source",
+                           "rev_growth", "gross_margin",
                            "op_margin", "net_margin", "fcf_margin", "roe", "roa", "fcf_yield",
                            "earnings_yield", "ev_ebitda", "pe", "pb", "net_debt_ebitda",
                            "debt_equity", "current_ratio"]
