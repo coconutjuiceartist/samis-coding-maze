@@ -26,6 +26,11 @@ TRADING_DAYS = 252
 _N = norm.cdf
 _n = norm.pdf
 
+# Above this, an "implied vol" is almost certainly a stale/garbage Yahoo field or
+# a non-arbitrageable quote, not a real vol. 5.0 == 500% is already extreme even
+# for a post-IPO name, so anything beyond it is dropped rather than plotted.
+MAX_PLAUSIBLE_IV = 5.0
+
 
 def _d1_d2(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0):
     sqrtT = math.sqrt(T)
@@ -168,12 +173,20 @@ def enrich_chain(
     kind: str,
     realized_vol: float | None = None,
     q: float = 0.0,
+    max_iv: float = MAX_PLAUSIBLE_IV,
 ) -> pd.DataFrame:
     """Enrich a raw yfinance option chain with mids, own-solved IV, Greeks and
     the per-contract signals described in CLAUDE.md §4.
 
     ``chain`` is expected to have columns: strike, bid, ask, lastPrice, volume,
     openInterest, impliedVolatility. Missing columns degrade gracefully.
+
+    Two robustness rules keep the downstream plots/tables sane:
+      * IV outside (0, ``max_iv``] is treated as missing — this is what stops
+        garbage Yahoo IV (e.g. 15.0 == 1500%) from polluting the surface.
+      * the cash-secured-put yield is computed only for OTM/ATM puts
+        (strike <= spot); for deep-ITM puts ``mid`` approaches ``strike`` and the
+        yield formula explodes, which is meaningless as a CSP candidate anyway.
     """
     if chain is None or len(chain) == 0:
         return pd.DataFrame()
@@ -188,6 +201,9 @@ def enrich_chain(
     bid = pd.to_numeric(col("bid"), errors="coerce")
     ask = pd.to_numeric(col("ask"), errors="coerce")
     last = pd.to_numeric(col("lastPrice"), errors="coerce")
+    df["bid"] = bid
+    df["ask"] = ask
+    df["two_sided"] = (bid > 0) & (ask > 0)  # tradeable (can actually be exited)
     df["mid"] = np.where((bid > 0) & (ask > 0), (bid + ask) / 2.0, last)
     df["spread_pct"] = np.where(
         (df["mid"] > 0) & (ask >= bid) & (ask > 0), (ask - bid) / df["mid"] * 100.0, np.nan
@@ -204,15 +220,21 @@ def enrich_chain(
     else:
         df["pct_otm"] = (1.0 - strike / spot) * 100.0
 
-    yahoo_iv = pd.to_numeric(col("impliedVolatility"), errors="coerce")
+    yahoo_iv = pd.to_numeric(col("impliedVolatility"), errors="coerce").to_numpy()
     solved_iv, used_solver = [], []
     for m, k in zip(df["mid"].to_numpy(), strike.to_numpy()):
         iv = implied_vol(m, spot, k, T, r, q, kind)
         solved_iv.append(iv)
         used_solver.append(np.isfinite(iv))
     solved_iv = np.array(solved_iv, dtype=float)
-    df["iv"] = np.where(np.isfinite(solved_iv), solved_iv, yahoo_iv)
-    df["iv_source"] = np.where(used_solver, "solved", "yahoo")
+    used_solver = np.array(used_solver, dtype=bool)
+    # Own-solved IV first (CLAUDE.md §3); only fall back to Yahoo's field.
+    iv = np.where(used_solver, solved_iv, yahoo_iv)
+    # Reject implausible IV so garbage values never reach the plots/table.
+    plausible = np.isfinite(iv) & (iv > 0) & (iv <= max_iv)
+    df["iv"] = np.where(plausible, iv, np.nan)
+    df["iv_source"] = np.where(used_solver & plausible, "solved",
+                               np.where(plausible, "yahoo", "n/a"))
 
     deltas, gammas, thetas, vegas, rhos = [], [], [], [], []
     for k, iv in zip(strike.to_numpy(), df["iv"].to_numpy()):
@@ -226,12 +248,14 @@ def enrich_chain(
     df["rho"] = rhos
     df["abs_delta"] = np.abs(df["delta"])
 
-    # Annualised cash-secured-put yield (puts only; NaN for calls).
+    # Annualised cash-secured-put yield — OTM/ATM puts only (strike <= spot).
     if not is_call:
-        df["csp_yield"] = [
+        raw_csp = np.array([
             csp_annualized_yield(m, k, expiry_dte)
             for m, k in zip(df["mid"].to_numpy(), strike.to_numpy())
-        ]
+        ])
+        otm = strike.to_numpy() <= spot
+        df["csp_yield"] = np.where(otm, raw_csp, np.nan)
     else:
         df["csp_yield"] = np.nan
 
@@ -242,3 +266,32 @@ def enrich_chain(
         df["vrp"] = np.nan
 
     return df
+
+
+def liquidity_filter(
+    df: pd.DataFrame,
+    min_open_int: int = 0,
+    require_two_sided: bool = True,
+    max_spread_pct: float | None = None,
+    need_iv: bool = True,
+) -> pd.DataFrame:
+    """Keep only contracts that are tradeable and have a usable IV.
+
+    Liquidity is a first-class screen (CLAUDE.md §2, Blankfein): a desk only
+    warehouses risk it can exit. Drops rows with no plausible IV, no positive
+    mid, no two-sided market, thin open interest, or a too-wide spread.
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    mask = pd.Series(True, index=df.index)
+    if need_iv and "iv" in df.columns:
+        mask &= df["iv"].notna()
+    if "mid" in df.columns:
+        mask &= pd.to_numeric(df["mid"], errors="coerce") > 0
+    if require_two_sided and "two_sided" in df.columns:
+        mask &= df["two_sided"].fillna(False)
+    if min_open_int and "open_int" in df.columns:
+        mask &= pd.to_numeric(df["open_int"], errors="coerce").fillna(0) >= min_open_int
+    if max_spread_pct is not None and "spread_pct" in df.columns:
+        mask &= pd.to_numeric(df["spread_pct"], errors="coerce").fillna(np.inf) <= max_spread_pct
+    return df[mask].copy()

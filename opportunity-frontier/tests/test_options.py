@@ -58,6 +58,45 @@ def test_csp_yield():
     assert math.isnan(O.csp_annualized_yield(120, 100, 30))  # negative denom
 
 
+def test_enrich_chain_clamps_garbage_iv_and_otm_only_csp():
+    # row0: OTM put (strike<spot), sane quote -> solvable IV, finite CSP yield.
+    # row1: deep-ITM put with mid far below intrinsic -> solver fails, Yahoo IV
+    #       is garbage (15.0 == 1500%) -> IV dropped to NaN; ITM -> CSP NaN.
+    chain = pd.DataFrame({
+        "strike": [95.0, 150.0],
+        "bid": [2.0, 0.9],
+        "ask": [2.2, 1.1],
+        "lastPrice": [2.1, 1.0],
+        "openInterest": [100, 5],
+        "volume": [10, 1],
+        "impliedVolatility": [0.30, 15.0],
+    })
+    enr = O.enrich_chain(chain, spot=100, r=0.03, expiry_dte=30, kind="put", realized_vol=0.2)
+    # OTM put
+    assert np.isfinite(enr.loc[0, "iv"]) and 0 < enr.loc[0, "iv"] <= O.MAX_PLAUSIBLE_IV
+    assert np.isfinite(enr.loc[0, "csp_yield"]) and enr.loc[0, "csp_yield"] > 0
+    assert enr.loc[0, "csp_yield"] < 5.0  # sane, not 400,000%
+    # garbage / ITM row
+    assert np.isnan(enr.loc[1, "iv"])
+    assert enr.loc[1, "iv_source"] == "n/a"
+    assert np.isnan(enr.loc[1, "csp_yield"])
+    assert bool(enr.loc[0, "two_sided"]) and bool(enr.loc[1, "two_sided"])
+
+
+def test_liquidity_filter():
+    df = pd.DataFrame({
+        "iv": [0.30, np.nan, 0.25, 0.40, 0.35],
+        "mid": [2.0, 1.0, 0.0, 3.0, 2.0],
+        "two_sided": [True, True, True, False, True],
+        "open_int": [100, 50, 200, 500, 5],
+        "spread_pct": [5, 5, 5, 5, 80],
+    })
+    out = O.liquidity_filter(df, min_open_int=10, require_two_sided=True, max_spread_pct=50)
+    # row0 kept; row1 dropped (NaN iv); row2 dropped (mid 0);
+    # row3 dropped (one-sided); row4 dropped (OI 5 < 10 and spread 80 > 50)
+    assert list(out.index) == [0]
+
+
 def test_enrich_chain_columns():
     chain = pd.DataFrame({
         "strike": [90, 95, 100, 105],

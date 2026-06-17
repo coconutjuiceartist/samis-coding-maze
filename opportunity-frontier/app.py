@@ -136,7 +136,8 @@ tab1, tab2, tab3 = st.tabs(
 # ============================================================================
 # TAB 1 — Volatility & Options Frontier
 # ============================================================================
-def build_options_table(tickers, expiries_per_name, side, rv_window):
+def build_options_table(tickers, expiries_per_name, side, rv_window,
+                        min_oi=0, require_two_sided=True, max_spread=None):
     rows = []
     realized_by_ticker = {}
     spot_by_ticker = {}
@@ -167,10 +168,18 @@ def build_options_table(tickers, expiries_per_name, side, rv_window):
                 enr["ticker"] = t
                 enr["expiry"] = exp
                 enr["kind"] = kind
+                enr["spot"] = spot
                 rows.append(enr)
+    empty = pd.DataFrame()
     if not rows:
-        return pd.DataFrame(), realized_by_ticker, spot_by_ticker, pd.DataFrame()
-    df = pd.concat(rows, ignore_index=True)
+        return empty, realized_by_ticker, spot_by_ticker, empty
+    raw_df = pd.concat(rows, ignore_index=True)
+    # Drop illiquid / no-IV junk BEFORE fitting so the surface, frontier and
+    # richness are computed only on tradeable, sane contracts.
+    df = O.liquidity_filter(raw_df, min_open_int=min_oi,
+                            require_two_sided=require_two_sided, max_spread_pct=max_spread)
+    if df.empty:
+        return empty, realized_by_ticker, spot_by_ticker, empty
     df = V.fit_skew(df)
     df, frontier = V.yield_risk_frontier(df)
     df = V.add_richness(df)
@@ -180,10 +189,25 @@ def build_options_table(tickers, expiries_per_name, side, rv_window):
 with tab1:
     st.markdown("**Where is option premium rich (sell) vs cheap (buy)** — vs its own "
                 "skew, vs trailing realised vol, and vs the VIX regime.")
+
+    # VIX + risk-free regime read, up top of the tab (CLAUDE.md §4).
+    v1, v2, v3 = st.columns(3)
+    v1.metric("Risk-free (13w T-bill)", f"{rf*100:.2f}%")
+    v2.metric("VIX", f"{vix_level:.1f}" if np.isfinite(vix_level) else "n/a",
+              f"{vix_pct:.0f}th pct (1y)" if np.isfinite(vix_pct) else None)
+    v3.metric("As of", dt.date.today().isoformat())
+    st.info(V.vix_regime(vix_level, vix_pct))
+
     cc = st.columns([3, 1, 1])
     tk_text = cc[0].text_input("Tickers (comma-separated)", "AAPL, MSFT, NVDA", key="t1_tk")
     exp_n = cc[1].number_input("Expiries / name", 1, 6, 2)
     side = cc[2].selectbox("Side", ["puts", "calls", "both"], index=0)
+
+    with st.expander("Liquidity filters (a thin, wide contract can't be exited cheaply)"):
+        fc = st.columns(3)
+        min_oi = fc[0].number_input("Min open interest", 0, 100000, 10, step=10)
+        two_sided = fc[1].checkbox("Require two-sided quote (bid & ask > 0)", value=True)
+        max_spread = fc[2].slider("Max bid/ask spread %", 0, 200, 100)
 
     if st.button("Scan options", type="primary"):
         st.session_state["t1_run"] = True
@@ -191,39 +215,89 @@ with tab1:
     if st.session_state.get("t1_run"):
         tickers = parse_tickers(tk_text)
         with st.spinner("Pulling chains and solving IV…"):
-            df, rv_map, spot_map, yfrontier = build_options_table(tickers, int(exp_n), side, rfr_window)
+            df, rv_map, spot_map, yfrontier = build_options_table(
+                tickers, int(exp_n), side, rfr_window,
+                min_oi=int(min_oi), require_two_sided=two_sided, max_spread=float(max_spread))
 
         st.session_state["t1_last_df"] = df
         if df.empty:
-            st.warning("No option data returned. Yahoo may be rate-limiting, or the "
-                       "tickers have no listed options. Try Refresh or fewer names.")
+            st.warning("No tradeable contracts after filtering. Yahoo may be rate-limiting, "
+                       "the tickers have no liquid options, or the filters are too strict — "
+                       "loosen them, reduce names, or hit Refresh.")
         else:
             st.caption(f"Realised vol ({rfr_window}d): " +
-                       "  ".join(f"{t}={rv*100:.0f}%" for t, rv in rv_map.items() if np.isfinite(rv)))
+                       "  ".join(f"{t}={rv*100:.0f}%" for t, rv in rv_map.items() if np.isfinite(rv))
+                       + f"  ·  {len(df)} tradeable contracts  ·  loaded {stamp()}")
 
+            n_rich = int((df["signal"] == "RICH → sell").sum())
+            n_cheap = int((df["signal"] == "CHEAP → buy").sum())
+            top_rich = (df[df["signal"] == "RICH → sell"]
+                        .sort_values("richness", ascending=False)["ticker"].head(3).tolist())
+            msg = f"**{n_rich} RICH (sell)**, **{n_cheap} CHEAP (buy)**, {len(df) - n_rich - n_cheap} fair."
+            if top_rich:
+                msg += f" Richest names: {', '.join(top_rich)}."
+            st.success(msg)
+            st.caption("⚠️ |delta| is **not** the tail risk of a short option, and 'RICH → sell' "
+                       "marks where premium is, not free money. Check spread_% and open_int before acting.")
+
+            # -------- Opportunities table (the actionable output, shown first) --------
+            st.subheader("🎯 Opportunities (ranked by richness)")
+            rename = {"kind": "side", "dte": "DTE", "iv": "IV", "vrp": "VRP",
+                      "csp_yield": "annual_CSP_yield", "spread_pct": "spread_%",
+                      "abs_delta": "|delta|", "signal": "flag", "iv_source": "IV_src"}
+            order = ["ticker", "expiry", "strike", "side", "DTE", "log_moneyness", "mid", "IV",
+                     "VRP", "annual_CSP_yield", "spread_%", "open_int", "volume", "|delta|",
+                     "skew_resid", "value_ratio", "richness", "flag", "IV_src"]
+            disp = (df.rename(columns=rename)
+                      .replace([np.inf, -np.inf], np.nan))
+            disp = disp[[c for c in order if c in disp.columns]]
+            disp = disp.sort_values("richness", ascending=False, na_position="last")
+
+            def _flag_row(row):
+                f = str(row.get("flag", ""))
+                bg = ("background-color:#ffe3e3" if f.startswith("RICH")
+                      else "background-color:#e3ffe6" if f.startswith("CHEAP") else "")
+                return [bg] * len(row)
+
+            st.dataframe(
+                disp.style.format({
+                    "strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
+                    "IV": "{:.1%}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
+                    "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
+                    "value_ratio": "{:.2f}", "richness": "{:.2f}", "DTE": "{:.0f}",
+                }, na_rep="—").apply(_flag_row, axis=1),
+                use_container_width=True, height=440,
+            )
+            st.download_button("⬇ Download full chain (CSV)", df.to_csv(index=False),
+                               "option_frontier.csv", "text/csv")
+
+            # -------- The three frontiers --------
             left, right = st.columns(2)
 
-            # Frontier 1: skew (smile) with the fitted local frontier.
+            # Frontier 1: skew (smile), coloured by residual (rich red / cheap blue).
             with left:
-                st.markdown("**Skew frontier** — IV vs log-moneyness; the fit is the "
-                            "local frontier, residual flags rich(+)/cheap(−).")
+                st.markdown("**Skew frontier** — IV vs log-moneyness; the fitted curve is the "
+                            "local frontier. Red = rich vs its own smile, blue = cheap.")
                 sk = df.dropna(subset=["iv", "log_moneyness"])
                 if not sk.empty:
-                    fig = px.scatter(sk, x="log_moneyness", y="iv", color="ticker",
-                                     symbol="kind", hover_data=["strike", "expiry", "skew_resid"])
+                    fig = px.scatter(sk, x="log_moneyness", y="iv", color="skew_resid",
+                                     color_continuous_scale="RdBu_r", color_continuous_midpoint=0,
+                                     symbol="ticker",
+                                     hover_data=["ticker", "expiry", "strike", "skew_resid"])
                     for (t, e), g in sk.groupby(["ticker", "expiry"]):
                         gg = g.dropna(subset=["iv_fit"]).sort_values("log_moneyness")
                         if len(gg) > 1:
                             fig.add_trace(go.Scatter(x=gg["log_moneyness"], y=gg["iv_fit"],
                                                      mode="lines", name=f"{t} {e} fit",
                                                      line=dict(dash="dot"), showlegend=False))
-                    fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10))
+                    fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10),
+                                      yaxis_tickformat=".0%", coloraxis_colorbar_title="resid")
                     st.plotly_chart(fig, use_container_width=True)
 
-            # Frontier 3: yield vs |delta| capital frontier (puts).
+            # Frontier 3: yield vs |delta| capital frontier (puts), axis clipped to stay readable.
             with right:
-                st.markdown("**Yield vs risk frontier** — annualised CSP yield vs |delta|; "
-                            "upper envelope is the frontier, risk-free is the floor.")
+                st.markdown("**Yield vs risk frontier** — annualised CSP yield vs |delta|; the "
+                            "upper envelope is the frontier, the dashed line is the risk-free floor.")
                 ydf = df.dropna(subset=["csp_yield", "abs_delta"])
                 ydf = ydf[ydf["csp_yield"] > 0]
                 if not ydf.empty:
@@ -234,43 +308,33 @@ with tab1:
                                                  mode="lines+markers", name="frontier",
                                                  line=dict(color="black", dash="dash")))
                     fig.add_hline(y=rf, line_dash="dash", annotation_text="risk-free floor")
+                    # clip the y-axis to a robust max so one weekly outlier can't blow it up
+                    cap = float(np.nanpercentile(ydf["csp_yield"], 95)) * 1.25
+                    cap = max(cap, rf * 2, 0.05)
                     fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10),
-                                      yaxis_tickformat=".0%")
+                                      yaxis_tickformat=".0%", yaxis_range=[0, cap])
                     st.plotly_chart(fig, use_container_width=True)
 
-            # Frontier 2: IV vs realised vol.
-            st.markdown("**Realised-vol frontier** — IV vs trailing realised; IV≫RV rich "
-                        "(sell), IV≪RV cheap (buy). The implementable stand-in for 'vs the 200-day'.")
+            # Frontier 2: IV vs realised vol, coloured by VRP.
+            st.markdown("**Realised-vol frontier** — IV vs trailing realised vol; above the line "
+                        "(IV ≫ RV) is rich → sell, below (IV ≪ RV) is cheap → buy. The "
+                        "implementable stand-in for 'vs the 200-day'.")
             ivrv = df.copy()
             ivrv["realized"] = ivrv["ticker"].map(rv_map)
             ivrv = ivrv.dropna(subset=["iv", "realized"])
             if not ivrv.empty:
-                fig = px.scatter(ivrv, x="realized", y="iv", color="ticker", symbol="kind",
-                                 hover_data=["strike", "expiry", "vrp"])
+                fig = px.scatter(ivrv, x="realized", y="iv", color="vrp",
+                                 color_continuous_scale="RdBu_r", color_continuous_midpoint=0,
+                                 symbol="ticker",
+                                 hover_data=["ticker", "expiry", "strike", "vrp"])
                 lim = float(np.nanmax([ivrv["iv"].max(), ivrv["realized"].max()])) * 1.05
                 fig.add_trace(go.Scatter(x=[0, lim], y=[0, lim], mode="lines",
                                          name="IV = RV", line=dict(dash="dash", color="grey")))
                 fig.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10),
-                                  xaxis_tickformat=".0%", yaxis_tickformat=".0%")
+                                  xaxis_tickformat=".0%", yaxis_tickformat=".0%",
+                                  xaxis_range=[0, lim], yaxis_range=[0, lim],
+                                  coloraxis_colorbar_title="VRP")
                 st.plotly_chart(fig, use_container_width=True)
-
-            # Opportunities table — sorted by richness, spread_% & open_int always shown.
-            st.markdown("**Opportunities** (sorted by composite richness)")
-            cols = ["ticker", "expiry", "kind", "strike", "mid", "iv", "iv_source", "delta",
-                    "vrp", "skew_resid", "csp_yield", "value_ratio", "richness", "signal",
-                    "spread_pct", "open_int", "volume", "dte"]
-            show = df[[c for c in cols if c in df.columns]].copy()
-            show = show.sort_values("richness", ascending=False, na_position="last")
-            st.dataframe(
-                show.style.format({
-                    "mid": "{:.2f}", "iv": "{:.1%}", "delta": "{:.2f}", "vrp": "{:.1%}",
-                    "skew_resid": "{:.3f}", "csp_yield": "{:.1%}", "value_ratio": "{:.2f}",
-                    "richness": "{:.2f}", "spread_pct": "{:.0f}%", "strike": "{:.1f}",
-                }, na_rep="—"),
-                use_container_width=True, height=420,
-            )
-            st.download_button("⬇ Download full chain (CSV)", df.to_csv(index=False),
-                               "option_frontier.csv", "text/csv")
 
             # IV snapshot store (roadmap): persist ATM IV for future IV Rank/Percentile.
             with st.expander("IV history (local SQLite snapshots → IV Rank/Percentile)"):
