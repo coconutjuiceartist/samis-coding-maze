@@ -172,7 +172,7 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
                 enr["spot"] = spot
                 rows.append(enr)
     empty = pd.DataFrame()
-    diag = {"raw": 0, "kept": 0, "kept_by_ticker": {}}
+    diag = {"raw": 0, "kept": 0, "kept_by_ticker": {}, "report": {}}
     if not rows:
         return empty, realized_by_ticker, spot_by_ticker, empty, diag
     raw_df = pd.concat(rows, ignore_index=True)
@@ -180,9 +180,10 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
     # Drop illiquid / no-IV junk BEFORE fitting so the surface, frontier and
     # richness are computed only on tradeable, sane contracts.
     band = (1 - moneyness_pct / 100.0, 1 + moneyness_pct / 100.0)
-    df = O.liquidity_filter(raw_df, min_open_int=min_oi,
-                            require_two_sided=require_two_sided, max_spread_pct=max_spread,
-                            min_dte=min_dte, moneyness_range=band)
+    filt = dict(min_open_int=min_oi, require_two_sided=require_two_sided,
+                max_spread_pct=max_spread, min_dte=min_dte, moneyness_range=band)
+    diag["report"] = O.liquidity_report(raw_df, **filt)
+    df = O.liquidity_filter(raw_df, **filt)
     diag["kept"] = len(df)
     if df.empty:
         return empty, realized_by_ticker, spot_by_ticker, empty, diag
@@ -212,7 +213,7 @@ with tab1:
 
     with st.expander("Liquidity & sanity filters — defaults target actionable contracts"):
         fc = st.columns(3)
-        min_oi = fc[0].number_input("Min open interest", 0, 100000, 100, step=10,
+        min_oi = fc[0].number_input("Min open interest", 0, 100000, 50, step=10,
                                     help="Open contracts at this strike. Higher = more liquid.")
         two_sided = fc[1].checkbox("Require two-sided quote (bid & ask > 0)", value=True)
         max_spread = fc[2].slider("Max bid/ask spread %", 0, 200, 25,
@@ -242,10 +243,23 @@ with tab1:
                 st.warning("No option data returned. Yahoo may be rate-limiting, the tickers have "
                            "no listed options, or the hosts aren't allow-listed — hit Refresh or try again.")
             else:
-                st.warning(f"Pulled {diag['raw']} listed contracts but **0 passed the liquidity "
-                           f"filter** (min OI {int(min_oi)}, max spread {int(max_spread)}%, "
-                           f"two-sided={two_sided}). These names are thinly traded — loosen the "
-                           "filters in the expander above, or add more liquid tickers.")
+                st.warning(f"Pulled **{diag['raw']}** listed contracts but **0 passed the filters**. "
+                           "Here's how many each rule removed (independently) so you can see the "
+                           "binding constraint:")
+                rep = diag.get("report", {})
+                if rep:
+                    rep_df = (pd.DataFrame(sorted(rep.items(), key=lambda kv: -kv[1]),
+                                           columns=["filter", "contracts removed"]))
+                    st.dataframe(rep_df, hide_index=True, use_container_width=True)
+                    top, top_n = max(rep.items(), key=lambda kv: kv[1])
+                    tip = ("If the options market is closed (overnight/pre-market), bids & asks are "
+                           "often 0 — untick **Require two-sided quote**." if "one-sided" in top
+                           else "Lower **Min open interest**." if "open interest" in top
+                           else "Raise **Max bid/ask spread %**." if "spread" in top
+                           else "Widen **Strike within ±% of spot**." if "strike outside" in top
+                           else "Lower **Min days to expiry**." if "days to expiry" in top
+                           else "Loosen the relevant filter above.")
+                    st.info(f"Binding constraint: **{top}** removed {top_n} of {diag['raw']}. {tip}")
         else:
             st.caption(f"Realised vol ({rfr_window}d): " +
                        "  ".join(f"{t}={rv*100:.0f}%" for t, rv in rv_map.items() if np.isfinite(rv))

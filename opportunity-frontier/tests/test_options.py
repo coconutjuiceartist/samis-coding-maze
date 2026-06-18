@@ -109,6 +109,24 @@ def test_liquidity_filter_dte_and_moneyness():
     assert list(out.index) == [1]
 
 
+def test_liquidity_report_names_binding_constraint():
+    # Every row has a one-sided quote -> that screen should dominate the report.
+    df = pd.DataFrame({
+        "iv": [0.3, 0.3, 0.3],
+        "mid": [2.0, 2.0, 2.0],
+        "two_sided": [False, False, False],
+        "open_int": [1000, 1000, 5],
+        "spread_pct": [5, 5, 5],
+        "dte": [30, 30, 30],
+        "moneyness": [1.0, 1.0, 1.0],
+    })
+    rep = O.liquidity_report(df, min_open_int=10, require_two_sided=True,
+                             max_spread_pct=25, min_dte=7, moneyness_range=(0.7, 1.3))
+    assert rep["one-sided quote (bid or ask = 0)"] == 3
+    assert max(rep.items(), key=lambda kv: kv[1])[0] == "one-sided quote (bid or ask = 0)"
+    assert rep["open interest < 10"] == 1
+
+
 def test_liquidity_filter():
     df = pd.DataFrame({
         "iv": [0.30, np.nan, 0.25, 0.40, 0.35],

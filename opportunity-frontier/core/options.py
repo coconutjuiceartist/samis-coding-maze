@@ -318,3 +318,41 @@ def liquidity_filter(
         m = pd.to_numeric(df["moneyness"], errors="coerce")
         mask &= m.between(lo, hi)
     return df[mask].copy()
+
+
+def liquidity_report(
+    df: pd.DataFrame,
+    min_open_int: int = 0,
+    require_two_sided: bool = True,
+    max_spread_pct: float | None = None,
+    need_iv: bool = True,
+    min_dte: float | None = None,
+    moneyness_range: tuple[float, float] | None = None,
+) -> dict:
+    """How many contracts *each* screen rejects, evaluated independently on the
+    raw set. The largest entry is the binding constraint — used to explain an
+    empty result instead of a bare "0 passed".
+    """
+    rep: dict[str, int] = {}
+    if df is None or df.empty:
+        return rep
+    if need_iv and "iv" in df.columns:
+        rep["no plausible IV (degenerate / out of range)"] = int(df["iv"].isna().sum())
+    if "mid" in df.columns:
+        rep["no positive mid price"] = int((pd.to_numeric(df["mid"], errors="coerce").fillna(0) <= 0).sum())
+    if require_two_sided and "two_sided" in df.columns:
+        rep["one-sided quote (bid or ask = 0)"] = int((~df["two_sided"].fillna(False)).sum())
+    if min_open_int and "open_int" in df.columns:
+        rep[f"open interest < {min_open_int}"] = int(
+            (pd.to_numeric(df["open_int"], errors="coerce").fillna(0) < min_open_int).sum())
+    if max_spread_pct is not None and "spread_pct" in df.columns:
+        rep[f"spread > {max_spread_pct:.0f}%"] = int(
+            (pd.to_numeric(df["spread_pct"], errors="coerce").fillna(np.inf) > max_spread_pct).sum())
+    if min_dte is not None and "dte" in df.columns:
+        rep[f"days to expiry < {min_dte:.0f}"] = int(
+            (pd.to_numeric(df["dte"], errors="coerce").fillna(0) < min_dte).sum())
+    if moneyness_range is not None and "moneyness" in df.columns:
+        lo, hi = moneyness_range
+        m = pd.to_numeric(df["moneyness"], errors="coerce")
+        rep[f"strike outside {lo:.2f}–{hi:.2f}× spot"] = int((~m.between(lo, hi)).sum())
+    return rep
