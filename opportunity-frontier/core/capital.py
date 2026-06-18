@@ -160,3 +160,85 @@ def long_option_edge(iv: float, realized_vol: float) -> float:
     if not (np.isfinite(iv) and np.isfinite(realized_vol)):
         return float("nan")
     return float(realized_vol - iv)
+
+
+def crash_scenarios(
+    mid: float,
+    strike: float,
+    spot: float | None = None,
+    iv: float | None = None,
+    dte: float | None = None,
+    moves: tuple[float, ...] = (-0.10, -0.15, -0.20),
+    z: float = 2.0,
+) -> dict:
+    """The Marks/Taleb "how much could I lose" view of one short cash-secured
+    put: the loss if the stock falls by a set of fixed amounts, plus a
+    vol-scaled z-sigma move.
+
+    For a short put you're assigned at ``strike`` and own the stock; your loss
+    per share below the breakeven (strike − mid) is ``breakeven − price`` (you
+    keep the premium, so nothing is lost until price drops below breakeven).
+
+    Returns, per scenario key:
+      ``loss_<pct>``      dollar loss PER CONTRACT (×100) at that % drop in spot.
+      ``loss_pct_<pct>``  that loss as a fraction of the collateral.
+    plus ``loss_sigma`` / ``loss_pct_sigma`` for the z-sigma move (needs iv+dte).
+    A fixed-grid scenario needs only ``spot``; the sigma scenario also needs iv & dte.
+    All values are 0 above breakeven (the premium covers the move) and NaN when
+    the required inputs are missing.
+    """
+    collateral = strike - mid
+    breakeven = strike - mid
+    out: dict = {}
+
+    def _loss_per_share(price: float) -> float:
+        return max(breakeven - price, 0.0)
+
+    for mv in moves:
+        key = f"{abs(int(round(mv * 100)))}"
+        if spot is not None and np.isfinite(spot):
+            price = spot * (1.0 + mv)
+            loss_ps = _loss_per_share(price)
+            out[f"loss_{key}"] = loss_ps * 100.0
+            out[f"loss_pct_{key}"] = (loss_ps / collateral) if collateral > 0 else float("nan")
+        else:
+            out[f"loss_{key}"] = float("nan")
+            out[f"loss_pct_{key}"] = float("nan")
+
+    if (spot is not None and iv is not None and dte is not None
+            and np.isfinite(spot) and np.isfinite(iv) and iv > 0 and dte > 0):
+        T = dte / 365.0
+        tail_price = spot * math.exp(-z * iv * math.sqrt(T))
+        loss_ps = _loss_per_share(tail_price)
+        out["loss_sigma"] = loss_ps * 100.0
+        out["loss_pct_sigma"] = (loss_ps / collateral) if collateral > 0 else float("nan")
+    else:
+        out["loss_sigma"] = float("nan")
+        out["loss_pct_sigma"] = float("nan")
+    return out
+
+
+def excess_per_tail(excess_yield: float, tail_loss: float, floor: float = 0.005) -> float:
+    """Capital-efficiency ratio: pay-over-cash per unit of honest downside.
+
+    ``excess_yield`` is the annualised premium over the matched Treasury (the
+    pay for the risk); ``tail_loss`` is the fraction of collateral lost in the
+    adverse scenario you choose as the denominator. The ratio answers "am I
+    paid enough for the downside I'm taking" — the question the vol-edge
+    ``richness`` score cannot.
+
+    Prefer a **fixed deep crash** (e.g. the −20% loss from ``crash_scenarios``)
+    over a vol-scaled 2-sigma move here: a name with cheap priced vol has a
+    tiny 2-sigma move, which *flatters* a far-OTM short put exactly where its
+    real tail risk lives (the Taleb trap). A fixed crash treats the tail as a
+    real-world event, not one scaled to the option's own (possibly cheap) vol.
+
+    The denominator is floored (default 0.5% of collateral) so far-OTM
+    "collect-almost-nothing" sells, whose modelled loss rounds to ~0, don't
+    rank as infinitely efficient on a few cents of premium. NaN if the excess
+    is unavailable.
+    """
+    if not np.isfinite(excess_yield):
+        return float("nan")
+    denom = max(tail_loss if np.isfinite(tail_loss) else 0.0, floor)
+    return float(excess_yield / denom)

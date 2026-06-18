@@ -213,17 +213,24 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
     return df, realized_by_ticker, spot_by_ticker, frontier, diag
 
 
+_CAP_COLS = ("rf_matched", "premium_yield", "excess_yield", "blended_return",
+             "collateral", "breakeven", "tail_loss", "crash_10", "crash_15", "crash_20",
+             "crash_20_usd", "premium_usd", "collateral_usd", "pay_per_crash", "below_rf")
+
+
 def add_capital_view(df: pd.DataFrame, curve: dict) -> pd.DataFrame:
     """Attach the capital-/risk-aware columns (CLAUDE.md §1, §6): for each put,
     how much it pays over a Treasury of its OWN maturity once the collateral is
-    assumed to earn that risk-free carry, plus an honest tail-loss figure.
+    assumed to earn that risk-free carry; the honest downside in a real crash
+    (−10/15/20%); dollar premium & collateral; a capital-efficiency score
+    (pay-over-cash per unit of −20% crash loss); and a flag when the premium
+    alone doesn't even beat the risk-free rate.
 
     Falls back to the flat 13-week rate when the full curve is unavailable, so
     the columns populate even if the curve endpoints aren't allow-listed.
     """
     out = df.copy()
-    for c in ("rf_matched", "premium_yield", "excess_yield", "blended_return",
-              "collateral", "breakeven", "tail_loss"):
+    for c in _CAP_COLS:
         out[c] = np.nan
     if out.empty:
         return out
@@ -240,9 +247,21 @@ def add_capital_view(df: pd.DataFrame, curve: dict) -> pd.DataFrame:
             rf_m = rf  # flat fallback to the 13-week bill
         m = CAP.csp_metrics(mid, strike, dte, rf_m,
                             spot=row.get("spot"), iv=row.get("iv"), assume_carry=True)
+        cr = CAP.crash_scenarios(mid, strike, spot=row.get("spot"), iv=row.get("iv"), dte=dte)
         for c in ("rf_matched", "premium_yield", "excess_yield", "blended_return",
                   "collateral", "breakeven", "tail_loss"):
             out.at[i, c] = m[c]
+        out.at[i, "crash_10"] = cr["loss_pct_10"]
+        out.at[i, "crash_15"] = cr["loss_pct_15"]
+        out.at[i, "crash_20"] = cr["loss_pct_20"]
+        out.at[i, "crash_20_usd"] = cr["loss_20"]
+        out.at[i, "premium_usd"] = mid * 100.0
+        out.at[i, "collateral_usd"] = m["collateral"] * 100.0
+        # Capital efficiency: pay over cash per unit of a real −20% crash (the
+        # honest denominator — a 2σ move flatters cheap-vol names; see capital.py).
+        out.at[i, "pay_per_crash"] = CAP.excess_per_tail(m["excess_yield"], cr["loss_pct_20"])
+        # Premium alone below the matched risk-free ⇒ a T-bill pays more for zero tail.
+        out.at[i, "below_rf"] = bool(np.isfinite(m["premium_yield"]) and m["premium_yield"] < rf_m)
     return out
 
 
@@ -355,73 +374,114 @@ with tab1:
 
             # Capital verdict for the top pick: does the premium actually pay you
             # enough OVER the matched Treasury to justify the tail (CLAUDE.md §1)?
-            ex = richest.get("excess_yield", np.nan)
-            bl = richest.get("blended_return", np.nan)
-            tl = richest.get("tail_loss", np.nan)
+            # Use the most capital-efficient sell, not just the richest vol-edge.
+            best_cap = df.sort_values("pay_per_crash", ascending=False)
+            best_cap = best_cap[best_cap["excess_yield"].notna()]
+            pick = best_cap.iloc[0] if not best_cap.empty else richest
+            ex = pick.get("excess_yield", np.nan)
+            bl = pick.get("blended_return", np.nan)
+            prem = pick.get("premium_usd", np.nan)
+            coll = pick.get("collateral_usd", np.nan)
             if np.isfinite(ex):
                 verdict = ("**barely worth it** — it pays almost nothing over cash for real tail risk"
                            if ex < 0.02 else
                            "**a modest premium** over cash for the tail you take" if ex < 0.05 else
                            "**a meaningful premium** over cash — still confirm the tail and liquidity")
-                tl_txt = f", and a ~2σ bad move costs **{tl*100:.0f}% of collateral**" if np.isfinite(tl) else ""
-                st.info(f"💰 **Capital read — {richest['ticker']} {richest['strike']:.0f}p:** pays "
-                        f"**{ex*100:.1f}%/yr over the matched Treasury** "
-                        f"(blended {bl*100:.1f}%/yr with carry){tl_txt}. That's {verdict}. "
+                scale = (f" You tie up **${coll:,.0f}** to collect **${prem:,.0f}**."
+                         if np.isfinite(coll) and np.isfinite(prem) else "")
+                st.info(f"💰 **Capital read — most efficient sell, {pick['ticker']} {pick['strike']:.0f}p:** "
+                        f"pays **{ex*100:.1f}%/yr over the matched Treasury** "
+                        f"(blended {bl*100:.1f}%/yr with carry).{scale} That's {verdict}. "
                         "See Tab 3 to rank it against credit, equities and convex buys.")
+                # The Taleb asymmetry, in dollars: what a real crash costs vs the premium.
+                c10, c15, c20 = pick.get("crash_10"), pick.get("crash_15"), pick.get("crash_20")
+                coll_f = coll if np.isfinite(coll) else np.nan
+                if np.isfinite(coll_f) and any(np.isfinite(x) for x in (c10, c15, c20)):
+                    def _usd(p):  # loss fraction → $ per contract
+                        return f"−${p*coll_f:,.0f}" if np.isfinite(p) else "—"
+                    st.caption(f"📉 **If you're wrong** (loss per contract): −10%: {_usd(c10)}  ·  "
+                               f"−15%: {_usd(c15)}  ·  −20%: {_usd(c20)}.  You're risking thousands "
+                               f"to make ${prem:,.0f} — the short-put asymmetry (Taleb/Marks).")
+                if bool(pick.get("below_rf")):
+                    st.warning(f"🚩 **{pick['ticker']} {pick['strike']:.0f}p — premium alone is BELOW the "
+                               "risk-free rate.** A matched T-bill pays more for *zero* tail risk; this "
+                               "only clears cash under the carry assumption (the collateral must actually "
+                               "be earning the T-bill rate). With $0 idle cash, prefer the bill.")
             st.caption("⚠️ |delta| is **not** the tail risk of a short option, and 'RICH → sell' "
                        "marks where premium is, not free money. Check spread_% and open_int before acting.")
 
             # -------- Opportunities (always surface both ends of the ranking) --------
-            st.subheader("🎯 Opportunities (ranked by richness)")
+            st.subheader("🎯 Opportunities")
             rename = {"kind": "side", "dte": "DTE", "iv": "IV", "vrp": "VRP",
                       "iv_rv_ratio": "IV/RV", "csp_yield": "annual_CSP_yield",
                       "spread_pct": "spread_%", "abs_delta": "|delta|", "signal": "flag",
                       "iv_source": "IV_src", "excess_yield": "excess_vs_UST",
                       "blended_return": "blended", "tail_loss": "tail_loss_2σ",
-                      "rf_matched": "matched_UST"}
+                      "rf_matched": "matched_UST", "crash_20": "crash_−20%",
+                      "pay_per_crash": "pay÷crash", "premium_usd": "premium_$",
+                      "collateral_usd": "collateral_$"}
             full = df.rename(columns=rename).replace([np.inf, -np.inf], np.nan)
             fmt = {"strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
                    "IV": "{:.1%}", "IV/RV": "{:.2f}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
                    "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
                    "z_skew": "{:.2f}", "z_vrp": "{:.2f}", "value_ratio": "{:.2f}",
                    "richness": "{:.2f}", "DTE": "{:.0f}", "excess_vs_UST": "{:.1%}",
-                   "blended": "{:.1%}", "tail_loss_2σ": "{:.0%}", "matched_UST": "{:.1%}"}
+                   "blended": "{:.1%}", "tail_loss_2σ": "{:.0%}", "matched_UST": "{:.1%}",
+                   "crash_−20%": "{:.0%}", "pay÷crash": "{:.2f}", "premium_$": "${:,.0f}",
+                   "collateral_$": "${:,.0f}"}
             compact = ["ticker", "expiry", "strike", "annual_CSP_yield", "excess_vs_UST",
-                       "blended", "tail_loss_2σ", "|delta|", "IV/RV", "spread_%", "open_int",
-                       "richness", "flag"]
+                       "premium_$", "collateral_$", "crash_−20%", "pay÷crash", "|delta|",
+                       "IV/RV", "spread_%", "open_int", "richness", "flag"]
+
+            # Sort key maps to the *renamed* column in `full`.
+            SORTS = {
+                "Capital efficiency — pay over cash per unit of −20% crash (pay÷crash)": "pay÷crash",
+                "Pay over cash — most premium above the matched Treasury (excess_vs_UST)": "excess_vs_UST",
+                "Vol edge — most mispriced implied vol (richness)": "richness",
+            }
+            sort_label = st.radio(
+                "Rank the premium-selling candidates by:", list(SORTS), index=0, horizontal=False,
+                help="Capital efficiency is the default: it answers the governing question — am I paid "
+                     "enough for the real downside? Vol edge (richness) only says the vol is mispriced, "
+                     "not that it's a good use of capital.")
+            sort_key = SORTS[sort_label]
 
             with st.expander("📖 What these columns mean (plain English)"):
                 st.markdown(
                     "- **annual_CSP_yield** — premium income per year as a % of the cash you set "
                     "aside (strike − premium). The raw return from selling the put.\n"
-                    "- **matched_UST** — the risk-free Treasury yield for *this option's own "
-                    "maturity* (a 2-year put is judged against the 2-year, not the 3-month, bill).\n"
-                    "- **excess_vs_UST** — how much **more per year** the put pays than that matched "
-                    "Treasury. Assuming the collateral earns the risk-free rate as carry, this *is* "
-                    "your pay for taking the short-vol risk. **This is the number that answers "
-                    "\"is it worth it?\"** — small here means you're being paid almost nothing extra "
-                    "over cash to warehouse tail risk.\n"
-                    "- **blended** — total annual return if held in T-bills: risk-free carry **plus** "
-                    "the premium.\n"
-                    "- **tail_loss_2σ** — Marks' \"how much could I lose\": the % of your collateral "
-                    "gone in a ~2-sigma adverse move by expiry. The honest risk |delta| can't see.\n"
+                    "- **excess_vs_UST** — how much **more per year** than a Treasury of this option's "
+                    "own maturity. Under the carry assumption (collateral earns the risk-free rate) "
+                    "this is your pay for the short-vol risk. **If it's tiny, you're barely paid.**\n"
+                    "- **premium_$ / collateral_$** — the actual dollars: cash you collect vs cash you "
+                    "tie up per contract. This is the antidote to the annualised-% illusion — e.g. "
+                    "$76 collected against $70,000 set aside.\n"
+                    "- **crash_−20%** — % of collateral lost if the stock falls 20% by expiry (a real "
+                    "bad day, Mar-2020 scale). The honest downside; a 5-delta put hides a big one.\n"
+                    "- **pay÷crash** — **the capital-efficiency score** and the default ranking: "
+                    "excess_vs_UST ÷ crash_−20%. *Am I paid enough for the real crash I'm exposed to?* "
+                    "Higher = better. We divide by a fixed −20% (not a 2σ move) on purpose — cheap-vol "
+                    "names have a tiny 2σ move that flatters exactly the trades whose risk is in the "
+                    "deep tail (the Taleb trap).\n"
+                    "- **blended** — total annual return if held in T-bills: carry **plus** premium.\n"
+                    "- **tail_loss_2σ** — % of collateral lost in a ~2σ move (a milder, vol-scaled "
+                    "downside; see crash_−20% for the real-world tail).\n"
                     "- **|delta|** — the *probability* of assignment, not the size of the loss.\n"
-                    "- **IV/RV** — implied vol ÷ the stock's realised vol; >1 = the vol you're "
-                    "selling is dear vs what the stock actually does (the edge).\n"
-                    "- **richness** — composite vol-edge score (skew + IV-vs-realised); the *timing/"
-                    "selection* signal, separate from the *capital-quality* columns above.")
+                    "- **IV/RV** — implied ÷ realised vol; >1 = the vol you're selling is dear (edge).\n"
+                    "- **richness** — composite vol-edge score; a *selection* signal, separate from "
+                    "the *capital-quality* columns. A trade can be rich on vol yet a poor use of cash.")
 
             def _view(frame):
                 return frame[[c for c in compact if c in frame.columns]]
 
             cS, cB = st.columns(2)
             with cS:
-                st.markdown("**🔴 Richest — premium-selling candidates**")
-                st.caption("Vol looks dear here (high IV vs its own smile *and* vs realised). "
-                           "Now read **excess_vs_UST**: that's the pay over cash for the tail in "
-                           "**tail_loss_2σ** — a rich vol edge with thin excess is still a poor "
-                           "use of capital.")
-                st.dataframe(_view(full.sort_values("richness", ascending=False).head(8))
+                st.markdown(f"**🔴 Best premium-selling candidates** — ranked by *{sort_label.split(' — ')[0]}*")
+                st.caption("Read left-to-right: the premium (annual_CSP_yield / premium_$), what it pays "
+                           "**over cash** (excess_vs_UST), the **real downside** (crash_−20%), and whether "
+                           "you're **paid enough for it** (pay÷crash). A rich vol edge with thin pay÷crash "
+                           "is still a poor use of capital.")
+                st.dataframe(_view(full.sort_values(sort_key, ascending=False, na_position="last").head(8))
                              .style.format(fmt, na_rep="—"), use_container_width=True, height=320)
             with cB:
                 st.markdown("**🟢 Cheapest — convexity-buying candidates**")
@@ -440,7 +500,8 @@ with tab1:
             with st.expander(f"Full ranked chain ({len(df)} contracts) — skew vs realised breakdown"):
                 order = ["ticker", "expiry", "strike", "DTE", "log_moneyness", "mid", "IV", "IV/RV",
                          "VRP", "annual_CSP_yield", "matched_UST", "excess_vs_UST", "blended",
-                         "tail_loss_2σ", "spread_%", "open_int", "volume", "|delta|",
+                         "premium_$", "collateral_$", "crash_−20%", "pay÷crash", "tail_loss_2σ",
+                         "spread_%", "open_int", "volume", "|delta|",
                          "skew_resid", "z_skew", "z_vrp", "value_ratio", "richness", "flag", "IV_src"]
                 disp = full[[c for c in order if c in full.columns]].sort_values(
                     "richness", ascending=False, na_position="last")
