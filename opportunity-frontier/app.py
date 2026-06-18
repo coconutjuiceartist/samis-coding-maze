@@ -19,6 +19,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from core import capital as CAP
 from core import fundamentals as F
 from core import frontier as FR
 from core import iv_store
@@ -72,6 +73,22 @@ def c_fundamentals(ticker: str) -> dict:
 @st.cache_data(ttl=SPOT_TTL, show_spinner=False)
 def c_rates_vix():
     return PROVIDER.risk_free_rate(), PROVIDER.vix()
+
+
+@st.cache_data(ttl=SPOT_TTL, show_spinner=False)
+def c_treasury_curve() -> dict:
+    return PROVIDER.treasury_curve()
+
+
+@st.cache_data(ttl=FUND_TTL, show_spinner=False)
+def c_market_yields() -> dict:
+    """IG/HY credit and equity earnings yields for the cross-asset menu (Tab 3).
+    Each leg fails soft to NaN so a dead endpoint never empties the frontier."""
+    return {
+        "ig": PROVIDER.etf_yield("LQD"),    # iShares IG corporate bond ETF
+        "hy": PROVIDER.etf_yield("HYG"),    # iShares HY corporate bond ETF
+        "eq_ey": PROVIDER.equity_earnings_yield("SPY"),
+    }
 
 
 @st.cache_data(ttl=FUND_TTL, show_spinner=False)
@@ -192,7 +209,41 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
     df = V.fit_skew(df)
     df, frontier = V.yield_risk_frontier(df)
     df = V.add_richness(df)
+    df = add_capital_view(df, c_treasury_curve())
     return df, realized_by_ticker, spot_by_ticker, frontier, diag
+
+
+def add_capital_view(df: pd.DataFrame, curve: dict) -> pd.DataFrame:
+    """Attach the capital-/risk-aware columns (CLAUDE.md §1, §6): for each put,
+    how much it pays over a Treasury of its OWN maturity once the collateral is
+    assumed to earn that risk-free carry, plus an honest tail-loss figure.
+
+    Falls back to the flat 13-week rate when the full curve is unavailable, so
+    the columns populate even if the curve endpoints aren't allow-listed.
+    """
+    out = df.copy()
+    for c in ("rf_matched", "premium_yield", "excess_yield", "blended_return",
+              "collateral", "breakeven", "tail_loss"):
+        out[c] = np.nan
+    if out.empty:
+        return out
+    for i, row in out.iterrows():
+        if str(row.get("kind")) != "put":
+            continue
+        dte = float(row.get("dte", np.nan))
+        strike = float(row.get("strike", np.nan))
+        mid = float(row.get("mid", np.nan))
+        if not (np.isfinite(dte) and np.isfinite(strike) and np.isfinite(mid)):
+            continue
+        rf_m = CAP.matched_rf(dte / 365.0, curve)
+        if not np.isfinite(rf_m):
+            rf_m = rf  # flat fallback to the 13-week bill
+        m = CAP.csp_metrics(mid, strike, dte, rf_m,
+                            spot=row.get("spot"), iv=row.get("iv"), assume_carry=True)
+        for c in ("rf_matched", "premium_yield", "excess_yield", "blended_return",
+                  "collateral", "breakeven", "tail_loss"):
+            out.at[i, c] = m[c]
+    return out
 
 
 with tab1:
@@ -301,6 +352,22 @@ with tab1:
                         "candidates to weigh.")
             st.caption(f"Most rich-leaning: **{_tag(richest)}** → sell premium.  ·  "
                        f"Most cheap-leaning: **{_tag(cheapest)}** → buy convexity.")
+
+            # Capital verdict for the top pick: does the premium actually pay you
+            # enough OVER the matched Treasury to justify the tail (CLAUDE.md §1)?
+            ex = richest.get("excess_yield", np.nan)
+            bl = richest.get("blended_return", np.nan)
+            tl = richest.get("tail_loss", np.nan)
+            if np.isfinite(ex):
+                verdict = ("**barely worth it** — it pays almost nothing over cash for real tail risk"
+                           if ex < 0.02 else
+                           "**a modest premium** over cash for the tail you take" if ex < 0.05 else
+                           "**a meaningful premium** over cash — still confirm the tail and liquidity")
+                tl_txt = f", and a ~2σ bad move costs **{tl*100:.0f}% of collateral**" if np.isfinite(tl) else ""
+                st.info(f"💰 **Capital read — {richest['ticker']} {richest['strike']:.0f}p:** pays "
+                        f"**{ex*100:.1f}%/yr over the matched Treasury** "
+                        f"(blended {bl*100:.1f}%/yr with carry){tl_txt}. That's {verdict}. "
+                        "See Tab 3 to rank it against credit, equities and convex buys.")
             st.caption("⚠️ |delta| is **not** the tail risk of a short option, and 'RICH → sell' "
                        "marks where premium is, not free money. Check spread_% and open_int before acting.")
 
@@ -309,15 +376,40 @@ with tab1:
             rename = {"kind": "side", "dte": "DTE", "iv": "IV", "vrp": "VRP",
                       "iv_rv_ratio": "IV/RV", "csp_yield": "annual_CSP_yield",
                       "spread_pct": "spread_%", "abs_delta": "|delta|", "signal": "flag",
-                      "iv_source": "IV_src"}
+                      "iv_source": "IV_src", "excess_yield": "excess_vs_UST",
+                      "blended_return": "blended", "tail_loss": "tail_loss_2σ",
+                      "rf_matched": "matched_UST"}
             full = df.rename(columns=rename).replace([np.inf, -np.inf], np.nan)
             fmt = {"strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
                    "IV": "{:.1%}", "IV/RV": "{:.2f}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
                    "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
                    "z_skew": "{:.2f}", "z_vrp": "{:.2f}", "value_ratio": "{:.2f}",
-                   "richness": "{:.2f}", "DTE": "{:.0f}"}
-            compact = ["ticker", "expiry", "strike", "IV", "IV/RV", "VRP", "annual_CSP_yield",
-                       "|delta|", "spread_%", "open_int", "richness", "flag"]
+                   "richness": "{:.2f}", "DTE": "{:.0f}", "excess_vs_UST": "{:.1%}",
+                   "blended": "{:.1%}", "tail_loss_2σ": "{:.0%}", "matched_UST": "{:.1%}"}
+            compact = ["ticker", "expiry", "strike", "annual_CSP_yield", "excess_vs_UST",
+                       "blended", "tail_loss_2σ", "|delta|", "IV/RV", "spread_%", "open_int",
+                       "richness", "flag"]
+
+            with st.expander("📖 What these columns mean (plain English)"):
+                st.markdown(
+                    "- **annual_CSP_yield** — premium income per year as a % of the cash you set "
+                    "aside (strike − premium). The raw return from selling the put.\n"
+                    "- **matched_UST** — the risk-free Treasury yield for *this option's own "
+                    "maturity* (a 2-year put is judged against the 2-year, not the 3-month, bill).\n"
+                    "- **excess_vs_UST** — how much **more per year** the put pays than that matched "
+                    "Treasury. Assuming the collateral earns the risk-free rate as carry, this *is* "
+                    "your pay for taking the short-vol risk. **This is the number that answers "
+                    "\"is it worth it?\"** — small here means you're being paid almost nothing extra "
+                    "over cash to warehouse tail risk.\n"
+                    "- **blended** — total annual return if held in T-bills: risk-free carry **plus** "
+                    "the premium.\n"
+                    "- **tail_loss_2σ** — Marks' \"how much could I lose\": the % of your collateral "
+                    "gone in a ~2-sigma adverse move by expiry. The honest risk |delta| can't see.\n"
+                    "- **|delta|** — the *probability* of assignment, not the size of the loss.\n"
+                    "- **IV/RV** — implied vol ÷ the stock's realised vol; >1 = the vol you're "
+                    "selling is dear vs what the stock actually does (the edge).\n"
+                    "- **richness** — composite vol-edge score (skew + IV-vs-realised); the *timing/"
+                    "selection* signal, separate from the *capital-quality* columns above.")
 
             def _view(frame):
                 return frame[[c for c in compact if c in frame.columns]]
@@ -325,12 +417,17 @@ with tab1:
             cS, cB = st.columns(2)
             with cS:
                 st.markdown("**🔴 Richest — premium-selling candidates**")
-                st.caption("High IV vs its own smile *and* vs the stock's realised vol.")
+                st.caption("Vol looks dear here (high IV vs its own smile *and* vs realised). "
+                           "Now read **excess_vs_UST**: that's the pay over cash for the tail in "
+                           "**tail_loss_2σ** — a rich vol edge with thin excess is still a poor "
+                           "use of capital.")
                 st.dataframe(_view(full.sort_values("richness", ascending=False).head(8))
                              .style.format(fmt, na_rep="—"), use_container_width=True, height=320)
             with cB:
                 st.markdown("**🟢 Cheapest — convexity-buying candidates**")
-                st.caption("Low IV vs its own smile *and* vs realised — cheap optionality (Taleb/PTJ).")
+                st.caption("Vol looks cheap here — *buying* these is long convexity (capped loss, "
+                           "fat right tail; Taleb/PTJ). The capital columns are framed for *selling*, "
+                           "so read these as buy candidates, not CSP yields.")
                 st.dataframe(_view(full.sort_values("richness", ascending=True).head(8))
                              .style.format(fmt, na_rep="—"), use_container_width=True, height=320)
 
@@ -342,7 +439,8 @@ with tab1:
 
             with st.expander(f"Full ranked chain ({len(df)} contracts) — skew vs realised breakdown"):
                 order = ["ticker", "expiry", "strike", "DTE", "log_moneyness", "mid", "IV", "IV/RV",
-                         "VRP", "annual_CSP_yield", "spread_%", "open_int", "volume", "|delta|",
+                         "VRP", "annual_CSP_yield", "matched_UST", "excess_vs_UST", "blended",
+                         "tail_loss_2σ", "spread_%", "open_int", "volume", "|delta|",
                          "skew_resid", "z_skew", "z_vrp", "value_ratio", "richness", "flag", "IV_src"]
                 disp = full[[c for c in order if c in full.columns]].sort_values(
                     "richness", ascending=False, na_position="last")
@@ -593,77 +691,250 @@ with tab2:
 # TAB 3 — Available Risk Frontier (cross-tab synthesis)
 # ============================================================================
 with tab3:
-    st.markdown("**Where does this trade rank among *everything*?** One expected-excess-return "
-                "vs risk chart spanning cash, Treasuries, credit, equities, and screened options. "
-                "Convex (long-vol) payoffs are rewarded, concave (short-vol) penalised beyond Sharpe "
-                "(Taleb / Marks).")
+    st.markdown("**Where does this trade rank among *everything*?** One chart, two axes: "
+                "**up = how much more you earn per year than cash** (expected excess return), "
+                "**right = how much you could lose** (risk). Every alternative use of the same "
+                "capital sits here — cash, Treasuries, IG/HY credit, equities, and the options "
+                "you screened on Tab 1 — so a single picture answers the governing question. "
+                "Convex (long-vol) payoffs are rewarded and concave (short-vol) penalised *beyond* "
+                "what a volatility-Sharpe implies, because |delta|-style vol hides a short option's "
+                "tail (Taleb / Marks).")
 
-    g = st.columns(4)
-    ust10 = g[0].number_input("10y UST yield %", 0.0, 15.0, 4.3, 0.1) / 100
-    ig = g[1].number_input("IG credit yield %", 0.0, 20.0, 5.4, 0.1) / 100
-    hy = g[2].number_input("HY credit yield %", 0.0, 30.0, 7.8, 0.1) / 100
-    eq_vol = g[3].number_input("Equity index vol %", 1.0, 60.0, 16.0, 0.5) / 100
+    # ---- The market menu: auto-pulled, editable (graceful fallback to manual) ----
+    curve = c_treasury_curve()
+    mkt = c_market_yields()
+    auto_ok = bool(curve) and any(np.isfinite(v) for v in mkt.values())
+    ust3m = CAP.matched_rf(0.25, curve)
+    ust10 = CAP.matched_rf(10.0, curve)
+    ig_auto, hy_auto, eq_auto = mkt.get("ig"), mkt.get("hy"), mkt.get("eq_ey")
+
+    src = ("✅ Menu auto-pulled from live market data (editable below)." if auto_ok else
+           "⚠️ Live market menu unavailable (Yahoo hosts may not be allow-listed) — "
+           "using editable manual defaults.")
+    st.caption(src + "  These are the *alternatives* every option competes with.")
+    with st.expander("Market menu — auto-pulled yields & risks (edit any cell)"):
+        g = st.columns(4)
+        ust10_in = g[0].number_input("10y UST yield %", 0.0, 15.0,
+                                     round((ust10 if np.isfinite(ust10) else 0.043) * 100, 2), 0.1) / 100
+        ig_in = g[1].number_input("IG credit yield %", 0.0, 20.0,
+                                  round((ig_auto if np.isfinite(ig_auto) else 0.054) * 100, 2), 0.1) / 100
+        hy_in = g[2].number_input("HY credit yield %", 0.0, 30.0,
+                                  round((hy_auto if np.isfinite(hy_auto) else 0.078) * 100, 2), 0.1) / 100
+        eq_ey_in = g[3].number_input("Equity earnings yield %", 0.0, 20.0,
+                                     round((eq_auto if np.isfinite(eq_auto) else 0.05) * 100, 2), 0.1) / 100
+        eq_vol_default = vix_level / 100.0 if np.isfinite(vix_level) else 0.16
+        eq_vol = st.number_input("Equity index risk (annual vol) %", 1.0, 60.0,
+                                 round(eq_vol_default * 100, 1), 0.5) / 100
+        st.caption("Risks (x-axis): a Treasury/credit's risk is its price volatility; equity's is "
+                   "its return vol; a short option's is the vol of the stock you'd be forced to own "
+                   "if assigned — a fuller risk than |delta|, which sees only the odds of assignment, "
+                   "not the size of the loss.")
 
     rows = [
         FR.cash_row(rf),
-        FR.treasury_row(ust10, rf, "10y Treasury", risk=0.07),
-        FR.credit_row(ig, rf, "IG credit", risk=0.06),
-        FR.credit_row(hy, rf, "HY credit", risk=0.11),
-        FR.equity_row(1 / 20.0, rf, eq_vol, "Equity index (E/Y≈5%)"),
+        FR.treasury_row(ust3m if np.isfinite(ust3m) else rf, rf, "3m T-bill", risk=0.005),
+        FR.treasury_row(ust10_in, rf, "10y Treasury", risk=0.07),
+        FR.credit_row(ig_in, rf, "IG credit (LQD)", risk=0.06),
+        FR.credit_row(hy_in, rf, "HY credit (HYG)", risk=0.11),
+        FR.equity_row(eq_ey_in, rf, eq_vol, "Equity index (SPY)"),
     ]
+    user_labels: set[str] = set()  # rows the user supplied (scan picks + CSV), for highlighting
 
-    # Pull the best screened short-premium candidates from Tab 1 if available.
+    # ---- Both sides of the Tab 1 scan: short premium AND convex buys ----
     t1_df = st.session_state.get("t1_last_df")
-    note = ""
     if isinstance(t1_df, pd.DataFrame) and not t1_df.empty:
-        cand = t1_df.dropna(subset=["csp_yield", "abs_delta"])
-        cand = cand[(cand["csp_yield"] > 0)].sort_values("richness", ascending=False).head(5)
-        for _, r in cand.iterrows():
-            rows.append(FR.short_option_row(
-                float(r["csp_yield"]), rf,
-                risk=float(min(max(r["abs_delta"], 0.05), 0.95)),
-                label=f"{r['ticker']} {r['expiry']} {r['strike']:.0f}p"))
-        note = " Screened short-put candidates pulled from Tab 1."
-    else:
-        st.caption("Run a scan on Tab 1 to drop screened short-premium candidates onto this chart." + note)
+        sells = t1_df[t1_df.get("kind", "") == "put"].dropna(subset=["excess_yield"])
+        sells = sells[sells["excess_yield"].replace([np.inf, -np.inf], np.nan).notna()]
+        sells = sells.sort_values("richness", ascending=False).head(5)
+        for _, r in sells.iterrows():
+            lbl = f"SELL {r['ticker']} {r['expiry']} {r['strike']:.0f}p"
+            tl = r.get("tail_loss", np.nan)
+            tail_txt = f"; 2σ tail loss ≈ {tl*100:.0f}% of collateral" if np.isfinite(tl) else ""
+            rows.append(FR.FrontierRow(
+                lbl, "short_option", float(r["excess_yield"]),
+                CAP.short_put_risk(r.get("abs_delta"), r.get("iv")), -1,
+                "short vol: premium over cash for the tail" + tail_txt))
+            user_labels.add(lbl)
 
-    # Optional: parse a CSV of the user's holdings.
-    up = st.file_uploader("Optional: holdings CSV (columns: label, expected_excess_return, risk, convexity)",
-                          type=["csv"])
+        buys = t1_df.dropna(subset=["iv", "vrp"])
+        buys = buys.sort_values("richness", ascending=True).head(3)  # cheapest vol
+        for _, r in buys.iterrows():
+            edge = -float(r["vrp"])  # IV below realised ⇒ positive edge
+            if not np.isfinite(edge):
+                continue
+            lbl = f"BUY {r['ticker']} {r['expiry']} {r['strike']:.0f}{r['kind'][0]}"
+            rows.append(FR.long_option_row(edge, float(r["iv"]), lbl))
+            user_labels.add(lbl)
+        st.caption("📍 Your Tab 1 picks are on the chart: **SELL …** = premium-selling candidates "
+                   "(plotted at their pay-over-cash and honest risk), **BUY …** = cheap convexity.")
+    else:
+        st.caption("ℹ️ Run a scan on **Tab 1** to drop your screened options onto this chart.")
+
+    # ---- Score specific trades from a CSV (e.g. a broker export) ----
+    with st.expander("⬆️ Score specific trades — upload a CSV"):
+        st.markdown(
+            "Two formats accepted:\n"
+            "1. **Option trades** (recommended): columns `type, strike, mid, dte` "
+            "(`type` ∈ short_put / long_put / long_call / short_call). Add `spot` & `iv` "
+            "(decimal, e.g. 0.45) to get an honest tail-loss and risk; add `label`/`expiry` "
+            "(YYYY-MM-DD, used if `dte` is absent). Each row is priced with the carry assumption "
+            "and dropped onto the chart.\n"
+            "2. **Pre-computed**: columns `label, expected_excess_return, risk, convexity` "
+            "(decimals) — plotted as-is.")
+        st.code("type,label,strike,mid,dte,spot,iv\n"
+                "short_put,SPCX Dec28 25p,25,2.04,912,24,0.50", language="text")
+        up = st.file_uploader("Trades CSV", type=["csv"])
+
+    def _rows_from_csv(hold: pd.DataFrame):
+        """Map an uploaded CSV to FrontierRows. Returns (rows, labels, messages)."""
+        new_rows, labels, msgs = [], set(), []
+        cols = {c.lower(): c for c in hold.columns}
+        # Pre-computed schema.
+        if {"expected_excess_return", "risk"}.issubset(cols):
+            for _, r in hold.iterrows():
+                lbl = str(r.get(cols.get("label", "label"), "position"))
+                new_rows.append(FR.FrontierRow(lbl, "your_trade",
+                                               float(r[cols["expected_excess_return"]]),
+                                               float(r[cols["risk"]]),
+                                               int(r.get(cols.get("convexity", "convexity"), 0) or 0),
+                                               "your trade (pre-computed)"))
+                labels.add(lbl)
+            return new_rows, labels, msgs
+        if "type" not in cols:
+            msgs.append(("error", "CSV needs either a `type` column (option trades) or "
+                                  "`expected_excess_return` & `risk` (pre-computed)."))
+            return new_rows, labels, msgs
+        for i, r in hold.iterrows():
+            try:
+                typ = str(r[cols["type"]]).strip().lower()
+                strike = float(r[cols["strike"]])
+                mid = float(r[cols.get("mid", cols.get("price", "mid"))])
+                dte = (float(r[cols["dte"]]) if "dte" in cols
+                       else dte_of(str(r[cols["expiry"]])) if "expiry" in cols else np.nan)
+                spot = float(r[cols["spot"]]) if "spot" in cols else None
+                iv = float(r[cols["iv"]]) if "iv" in cols else None
+                lbl = str(r[cols["label"]]) if "label" in cols else f"{typ} {strike:.0f}"
+                if not (np.isfinite(strike) and np.isfinite(mid) and np.isfinite(dte)):
+                    msgs.append(("warning", f"Row {i}: need numeric strike, mid and dte/expiry — skipped."))
+                    continue
+                rf_m = CAP.matched_rf(dte / 365.0, curve)
+                rf_m = rf_m if np.isfinite(rf_m) else rf
+                if typ == "short_put":
+                    m = CAP.csp_metrics(mid, strike, dte, rf_m, spot=spot, iv=iv, assume_carry=True)
+                    risk = CAP.short_put_risk(np.nan, iv)
+                    if not np.isfinite(risk):
+                        msgs.append(("warning", f"Row {i} ({lbl}): add `iv` so the risk axis is "
+                                                "honest — skipped."))
+                        continue
+                    tl = m["tail_loss"]
+                    tail_txt = f"; 2σ tail loss ≈ {tl*100:.0f}% of collateral" if np.isfinite(tl) else ""
+                    new_rows.append(FR.FrontierRow(
+                        lbl, "your_trade", float(m["excess_yield"]), float(risk), -1,
+                        f"your short put: {m['excess_yield']*100:.1f}%/yr over matched UST{tail_txt}"))
+                    labels.add(lbl)
+                elif typ in ("long_put", "long_call"):
+                    risk = float(iv) if (iv is not None and np.isfinite(iv) and iv > 0) else 0.20
+                    new_rows.append(FR.long_option_row(0.0, risk, lbl))
+                    labels.add(lbl)
+                    msgs.append(("info", f"Row {i} ({lbl}): long convexity — loss capped at premium; "
+                                         "expected excess is view-dependent so plotted at 0 (the "
+                                         "convexity reward still lifts its score)."))
+                else:
+                    msgs.append(("warning", f"Row {i}: unknown type '{typ}' — skipped."))
+            except Exception as e:
+                msgs.append(("warning", f"Row {i}: could not parse ({e}) — skipped."))
+        return new_rows, labels, msgs
+
     if up is not None:
         try:
             hold = pd.read_csv(up)
-            for _, r in hold.iterrows():
-                rows.append(FR.FrontierRow(
-                    str(r.get("label", "position")), "position",
-                    float(r["expected_excess_return"]), float(r["risk"]),
-                    int(r.get("convexity", 0)), "your position"))
-            st.success(f"Loaded {len(hold)} positions.")
+            new_rows, labels, msgs = _rows_from_csv(hold)
+            rows.extend(new_rows)
+            user_labels |= labels
+            for level, text in msgs:
+                getattr(st, level)(text)
+            if new_rows:
+                st.success(f"Scored {len(new_rows)} trade(s) and added them to the frontier below.")
         except Exception as e:
             st.error(f"Could not parse CSV: {e}")
 
+    # ---- Build, plot, explain ----
     fr = FR.build_frontier(rows)
     if not fr.empty:
+        shape_name = {1: "convex (long vol)", -1: "concave (short vol)", 0: "linear"}
+        fr = fr.copy()
+        fr["payoff"] = fr["convexity"].map(shape_name)
+        fr["yours"] = fr["label"].isin(user_labels)
+
         fig = px.scatter(fr, x="risk", y="expected_excess_return", color="asset_class",
-                         text="label", hover_data=["sharpe_like", "shape_adj_score", "note"])
+                         symbol="payoff",
+                         symbol_map={"convex (long vol)": "triangle-up",
+                                     "concave (short vol)": "triangle-down", "linear": "circle"},
+                         text="label",
+                         hover_data={"label": False, "payoff": True, "sharpe_like": ":.2f",
+                                     "shape_adj_score": ":.2f", "note": True})
         env = FR.efficient_envelope(fr)
         if len(env) > 1:
             env = env.sort_values("risk")
             fig.add_trace(go.Scatter(x=env["risk"], y=env["expected_excess_return"],
-                                     mode="lines", name="frontier", line=dict(color="black")))
-        fig.update_traces(textposition="top center")
-        fig.update_layout(height=480, margin=dict(l=10, r=10, t=10, b=10),
-                          xaxis_title="risk (annualised)", yaxis_title="expected excess return",
+                                     mode="lines", name="frontier (best return per unit risk)",
+                                     line=dict(color="black")))
+        # Mark cash (the floor every trade must beat) and ring the user's own trades.
+        fig.add_hline(y=0, line_dash="dot", line_color="grey",
+                      annotation_text="cash floor (0% over risk-free)")
+        yours = fr[fr["yours"]]
+        if not yours.empty:
+            fig.add_trace(go.Scatter(x=yours["risk"], y=yours["expected_excess_return"],
+                                     mode="markers", name="your trades",
+                                     marker=dict(size=16, color="rgba(0,0,0,0)",
+                                                 line=dict(color="black", width=2))))
+        fig.update_traces(textposition="top center", selector=dict(mode="markers+text"))
+        fig.update_layout(height=520, margin=dict(l=10, r=10, t=30, b=10),
+                          xaxis_title="risk → (annualised; how much you could lose)",
+                          yaxis_title="excess return ↑ (per year, over risk-free)",
                           xaxis_tickformat=".0%", yaxis_tickformat=".0%")
         st.plotly_chart(fig, use_container_width=True)
+        st.caption("**How to read it:** the black line is the frontier — the best excess return "
+                   "available at each level of risk. Points **above** it are unusually good value; "
+                   "points **below** it are dominated (something else pays more for the same risk, "
+                   "or the same return for less risk). ▲ = convex (capped loss, fat right tail), "
+                   "▼ = concave/short-vol (the score docks these for tail risk), ● = linear. "
+                   "Black rings are your own trades/picks.")
 
+        # Where do the user's trades land? Plain-English ranking.
+        ranked = fr.reset_index(drop=True)
+        if user_labels:
+            lines = []
+            for lbl in user_labels:
+                hit = ranked[ranked["label"] == lbl]
+                if hit.empty:
+                    continue
+                pos = int(hit.index[0]) + 1
+                row = hit.iloc[0]
+                beats_cash = "beats" if row["expected_excess_return"] > 0 else "does **not** beat"
+                lines.append(f"- **{lbl}** ranks **#{pos} of {len(ranked)}** by shape-adjusted score "
+                             f"(pays {row['expected_excess_return']*100:.1f}%/yr over cash at "
+                             f"{row['risk']*100:.0f}% risk — {beats_cash} cash).")
+            if lines:
+                st.markdown("**Your trades vs the field:**\n" + "\n".join(lines))
+
+        st.markdown("**The full menu, ranked** — `shape_adj_score` is the bottom line: excess "
+                    "return per unit of risk, *then* tilted for payoff shape (convex up, concave "
+                    "down). Higher = a better use of the same capital and risk.")
         st.dataframe(
-            fr[["label", "asset_class", "expected_excess_return", "risk", "convexity",
-                "sharpe_like", "shape_adj_score", "note"]].style.format({
-                "expected_excess_return": "{:.2%}", "risk": "{:.2%}",
-                "sharpe_like": "{:.2f}", "shape_adj_score": "{:.2f}",
+            ranked[["label", "asset_class", "payoff", "expected_excess_return", "risk",
+                    "sharpe_like", "shape_adj_score", "note"]].rename(columns={
+                "expected_excess_return": "excess_vs_cash", "sharpe_like": "return_per_risk",
+                "shape_adj_score": "score (shape-adj)"}).style.format({
+                "excess_vs_cash": "{:.2%}", "risk": "{:.2%}",
+                "return_per_risk": "{:.2f}", "score (shape-adj)": "{:.2f}",
             }, na_rep="—"),
             use_container_width=True,
         )
-    st.warning("Short-vol rows are shape-penalised: |delta|-style risk understates the tail. "
-               "This ranks *candidates*; it is not advice.")
+        st.caption("**Columns:** *excess_vs_cash* = annual return above the risk-free rate; "
+                   "*risk* = annualised loss/vol proxy; *return_per_risk* = excess ÷ risk (a "
+                   "Sharpe-like ratio); *score (shape-adj)* = that ratio after rewarding convexity "
+                   "and penalising short-vol tails.")
+    st.warning("⚠️ Short-vol rows are shape-penalised because |delta|-style vol understates the "
+               "tail (Taleb/Marks). This ranks *candidates* on honest reward-vs-risk; it is a "
+               "screen, never advice. Confirm liquidity and size for the tail before acting.")

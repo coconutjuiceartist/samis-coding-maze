@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from core import capital as CAP
 from core import frontier as FR
 from core import iv_store
 
@@ -47,3 +48,34 @@ def test_iv_store_roundtrip(tmp_path):
 def test_atm_iv_picks_closest_strike():
     puts = pd.DataFrame({"strike": [90, 100, 110], "iv": [0.30, 0.25, 0.28]})
     assert iv_store.atm_iv_from_chain(puts, spot=101) == pytest.approx(0.25)
+
+
+# --------------------------------------------------------------------------- #
+# capital ↔ frontier integration: the carry-correct mapping (Tab 3)
+# --------------------------------------------------------------------------- #
+def test_short_put_uses_premium_as_excess_not_premium_minus_rf():
+    """The frontier excess for a carry-secured short put is the premium itself,
+    NOT premium − rf (the bug the rewrite fixes). Verify the row we'd build
+    carries the full premium as its excess-over-cash coordinate."""
+    rf = 0.043
+    m = CAP.csp_metrics(mid=2.04, strike=25.0, dte=912.0, rf_matched=rf, assume_carry=True)
+    row = FR.FrontierRow("SELL SPCX 25p", "short_option",
+                         m["excess_yield"], CAP.short_put_risk(0.10, 0.50), -1, "")
+    assert row.expected_excess_return == pytest.approx(m["premium_yield"])
+    assert row.expected_excess_return > rf - rf  # strictly positive, not net of rf
+
+
+def test_low_premium_far_dated_short_put_ranks_below_credit():
+    """A thin-premium, high-vol short put (the SPCX-style trade) must sort below
+    cash-like HY credit once risk is measured honestly by the stock's vol."""
+    rf = 0.043
+    m = CAP.csp_metrics(mid=2.04, strike=25.0, dte=912.0, rf_matched=rf, assume_carry=True)
+    rows = [
+        FR.cash_row(rf),
+        FR.credit_row(0.078, rf, "HY credit", risk=0.11),
+        FR.FrontierRow("SELL SPCX 25p", "short_option",
+                       m["excess_yield"], CAP.short_put_risk(0.10, 0.50), -1, ""),
+    ]
+    df = FR.build_frontier(rows)
+    order = list(df["label"])
+    assert order.index("HY credit") < order.index("SELL SPCX 25p")

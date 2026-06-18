@@ -113,6 +113,50 @@ class YFinanceProvider:
             pass
         return float("nan")
 
+    # ^IRX = 13-week bill (~0.25y), ^FVX = 5y, ^TNX = 10y, ^TYX = 30y; all quoted
+    # in percent. These are the free CBOE yield indices available from Yahoo.
+    _CURVE_TICKERS = {0.25: "^IRX", 5.0: "^FVX", 10.0: "^TNX", 30.0: "^TYX"}
+
+    def treasury_curve(self) -> dict[float, float]:
+        if yf is None:
+            return {}
+        out: dict[float, float] = {}
+        for tenor, sym in self._CURVE_TICKERS.items():
+            try:
+                hist = yf.Ticker(sym).history(period="5d")
+                if not hist.empty:
+                    out[tenor] = float(hist["Close"].dropna().iloc[-1]) / 100.0
+            except Exception:
+                continue
+        return out
+
+    def etf_yield(self, ticker: str) -> float:
+        info = self.fundamentals(ticker)
+        if not info:
+            return float("nan")
+        for key in ("yield", "trailingAnnualDividendYield", "dividendYield"):
+            v = info.get(key)
+            try:
+                if v is not None and np.isfinite(float(v)):
+                    return float(v)  # yfinance reports these as decimals (e.g. 0.054)
+            except (TypeError, ValueError):
+                continue
+        return float("nan")
+
+    def equity_earnings_yield(self, ticker: str = "SPY") -> float:
+        info = self.fundamentals(ticker)
+        if not info:
+            return float("nan")
+        for key in ("trailingPE", "forwardPE"):
+            v = info.get(key)
+            try:
+                pe = float(v)
+                if np.isfinite(pe) and pe > 0:
+                    return 1.0 / pe
+            except (TypeError, ValueError):
+                continue
+        return float("nan")
+
     def vix(self):
         if yf is None:
             return float("nan"), float("nan")

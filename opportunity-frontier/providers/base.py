@@ -52,5 +52,18 @@ class DataProvider(Protocol):
     def risk_free_rate(self) -> float:
         """Risk-free rate as a decimal (e.g. 0.053), or NaN."""
 
+    def treasury_curve(self) -> dict[float, float]:
+        """Risk-free curve as {tenor_in_years: rate_decimal}, e.g.
+        {0.25: 0.052, 5: 0.043, 10: 0.044, 30: 0.046}; empty dict on failure.
+        Lets an option be compared against a Treasury of its OWN maturity."""
+
+    def etf_yield(self, ticker: str) -> float:
+        """Distribution / SEC yield of a bond (or other) ETF as a decimal —
+        used for IG (LQD) and HY (HYG) credit on the frontier. NaN on failure."""
+
+    def equity_earnings_yield(self, ticker: str = "SPY") -> float:
+        """Trailing earnings yield (1/PE) of an equity index proxy as a
+        decimal; NaN on failure."""
+
     def vix(self) -> tuple[float, float]:
         """(VIX level, 1-year percentile 0-100); NaNs if unavailable."""
