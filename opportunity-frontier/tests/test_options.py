@@ -127,6 +127,23 @@ def test_liquidity_report_names_binding_constraint():
     assert rep["open interest < 10"] == 1
 
 
+def test_delta_band_excludes_deep_itm_and_far_otm():
+    # Deep-ITM (|delta|~0.99, ~zero vega -> unstable IV) and far-OTM (|delta|~0.01)
+    # must be dropped; the ATM/OTM premium zone kept.
+    df = pd.DataFrame({
+        "iv": [0.2, 0.2, 0.2, 0.2],
+        "mid": [1, 1, 1, 1],
+        "two_sided": [True, True, True, True],
+        "open_int": [1000, 1000, 1000, 1000],
+        "spread_pct": [5, 5, 5, 5],
+        "dte": [30, 30, 30, 30],
+        "moneyness": [1.05, 0.98, 0.92, 0.80],
+        "abs_delta": [0.99, 0.45, 0.20, 0.01],  # deep ITM, ATM, OTM, far OTM
+    })
+    out = O.liquidity_filter(df, delta_band=(0.05, 0.55))
+    assert list(out.index) == [1, 2]  # only ATM + OTM survive
+
+
 def test_liquidity_filter():
     df = pd.DataFrame({
         "iv": [0.30, np.nan, 0.25, 0.40, 0.35],

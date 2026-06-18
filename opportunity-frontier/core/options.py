@@ -284,19 +284,21 @@ def liquidity_filter(
     need_iv: bool = True,
     min_dte: float | None = None,
     moneyness_range: tuple[float, float] | None = None,
+    delta_band: tuple[float, float] | None = None,
 ) -> pd.DataFrame:
     """Keep only contracts that are tradeable, near the money, and have a usable IV.
 
     Liquidity is a first-class screen (CLAUDE.md §2, Blankfein): a desk only
     warehouses risk it can exit. Drops rows with no plausible IV, no positive
     mid, no two-sided market, thin open interest, a too-wide spread, too few days
-    to expiry (0-DTE has no vol content), or a strike far from spot (deep
-    ITM/OTM wings are ~all intrinsic / untradeable and pollute the surface).
+    to expiry (0-DTE has no vol content), a strike far from spot, or a |delta|
+    outside the sellable-premium band.
 
-    Note the spread filter alone is *not* enough: a deep-ITM contract is
-    intrinsic-heavy, so its bid/ask is a tiny % of a large price and it sails
-    through — which is exactly how 0-DTE deep-ITM puts hijacked an earlier scan.
-    The DTE and moneyness screens are what actually remove them.
+    The ``delta_band`` screen is what keeps IV meaningful: a deep-ITM option has
+    ~zero vega, so a few cents of price noise swing its solved IV by 10+ points —
+    it must not be ranked on "richness". Far-OTM (|delta|~0) has no premium worth
+    selling. Keeping |delta| in roughly [0.05, 0.55] targets the OTM/ATM zone
+    where vega is real and the premium is tradeable.
     """
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
@@ -317,6 +319,10 @@ def liquidity_filter(
         lo, hi = moneyness_range
         m = pd.to_numeric(df["moneyness"], errors="coerce")
         mask &= m.between(lo, hi)
+    if delta_band is not None and "abs_delta" in df.columns:
+        lo, hi = delta_band
+        ad = pd.to_numeric(df["abs_delta"], errors="coerce")
+        mask &= ad.between(lo, hi)
     return df[mask].copy()
 
 
@@ -328,6 +334,7 @@ def liquidity_report(
     need_iv: bool = True,
     min_dte: float | None = None,
     moneyness_range: tuple[float, float] | None = None,
+    delta_band: tuple[float, float] | None = None,
 ) -> dict:
     """How many contracts *each* screen rejects, evaluated independently on the
     raw set. The largest entry is the binding constraint — used to explain an
@@ -355,4 +362,8 @@ def liquidity_report(
         lo, hi = moneyness_range
         m = pd.to_numeric(df["moneyness"], errors="coerce")
         rep[f"strike outside {lo:.2f}–{hi:.2f}× spot"] = int((~m.between(lo, hi)).sum())
+    if delta_band is not None and "abs_delta" in df.columns:
+        lo, hi = delta_band
+        ad = pd.to_numeric(df["abs_delta"], errors="coerce")
+        rep[f"|delta| outside {lo:.2f}–{hi:.2f} (deep ITM / far OTM)"] = int((~ad.between(lo, hi)).sum())
     return rep

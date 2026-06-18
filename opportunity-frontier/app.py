@@ -138,7 +138,7 @@ tab1, tab2, tab3 = st.tabs(
 # ============================================================================
 def build_options_table(tickers, expiries_per_name, side, rv_window,
                         min_oi=0, require_two_sided=True, max_spread=None,
-                        min_dte=7, moneyness_pct=30):
+                        min_dte=7, moneyness_pct=30, delta_band=(0.05, 0.55)):
     rows = []
     realized_by_ticker = {}
     spot_by_ticker = {}
@@ -181,7 +181,8 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
     # richness are computed only on tradeable, sane contracts.
     band = (1 - moneyness_pct / 100.0, 1 + moneyness_pct / 100.0)
     filt = dict(min_open_int=min_oi, require_two_sided=require_two_sided,
-                max_spread_pct=max_spread, min_dte=min_dte, moneyness_range=band)
+                max_spread_pct=max_spread, min_dte=min_dte, moneyness_range=band,
+                delta_band=delta_band)
     diag["report"] = O.liquidity_report(raw_df, **filt)
     df = O.liquidity_filter(raw_df, **filt)
     diag["kept"] = len(df)
@@ -225,6 +226,11 @@ with tab1:
         moneyness_pct = fc2[1].slider("Strike within ±% of spot", 5, 100, 30,
                                       help="Keeps near-the-money strikes; drops deep ITM/OTM wings "
                                            "that are untradeable as premium and pollute the surface.")
+        delta_band = st.slider(
+            "Keep |delta| between (the sellable-premium zone)", 0.0, 1.0, (0.05, 0.55), step=0.05,
+            help="Excludes deep-ITM options (|delta|→1) whose IV is meaningless — near-zero vega "
+                 "means a few cents of price noise swing IV by 10+ points — and far-OTM lottery "
+                 "tickets (|delta|→0) with no real premium.")
 
     if st.button("Scan options", type="primary"):
         st.session_state["t1_run"] = True
@@ -235,7 +241,8 @@ with tab1:
             df, rv_map, spot_map, yfrontier, diag = build_options_table(
                 tickers, int(exp_n), side, rfr_window,
                 min_oi=int(min_oi), require_two_sided=two_sided, max_spread=float(max_spread),
-                min_dte=int(min_dte), moneyness_pct=int(moneyness_pct))
+                min_dte=int(min_dte), moneyness_pct=int(moneyness_pct),
+                delta_band=(float(delta_band[0]), float(delta_band[1])))
 
         st.session_state["t1_last_df"] = df
         if df.empty:
