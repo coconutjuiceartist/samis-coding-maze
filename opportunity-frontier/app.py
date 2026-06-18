@@ -137,7 +137,8 @@ tab1, tab2, tab3 = st.tabs(
 # TAB 1 — Volatility & Options Frontier
 # ============================================================================
 def build_options_table(tickers, expiries_per_name, side, rv_window,
-                        min_oi=0, require_two_sided=True, max_spread=None):
+                        min_oi=0, require_two_sided=True, max_spread=None,
+                        min_dte=7, moneyness_pct=30):
     rows = []
     realized_by_ticker = {}
     spot_by_ticker = {}
@@ -150,11 +151,11 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
         rv = V.realized_vol(hist["Close"], rv_window) if "Close" in hist else float("nan")
         realized_by_ticker[t] = rv
 
-        exps = c_expiries(t)[:expiries_per_name]
-        for exp in exps:
+        # Skip 0-DTE / near-expiry: pick the first N expiries that clear min_dte
+        # (these have real vol content; 0-DTE is degenerate).
+        usable = [e for e in c_expiries(t) if np.isfinite(dte_of(e)) and dte_of(e) >= min_dte]
+        for exp in usable[:expiries_per_name]:
             dte = dte_of(exp)
-            if not np.isfinite(dte):
-                continue
             calls, puts = c_chain(t, exp)
             frames = []
             if side in ("puts", "both") and not puts.empty:
@@ -178,8 +179,10 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
     diag["raw"] = len(raw_df)
     # Drop illiquid / no-IV junk BEFORE fitting so the surface, frontier and
     # richness are computed only on tradeable, sane contracts.
+    band = (1 - moneyness_pct / 100.0, 1 + moneyness_pct / 100.0)
     df = O.liquidity_filter(raw_df, min_open_int=min_oi,
-                            require_two_sided=require_two_sided, max_spread_pct=max_spread)
+                            require_two_sided=require_two_sided, max_spread_pct=max_spread,
+                            min_dte=min_dte, moneyness_range=band)
     diag["kept"] = len(df)
     if df.empty:
         return empty, realized_by_ticker, spot_by_ticker, empty, diag
@@ -207,13 +210,20 @@ with tab1:
     exp_n = cc[1].number_input("Expiries / name", 1, 6, 2)
     side = cc[2].selectbox("Side", ["puts", "calls", "both"], index=0)
 
-    with st.expander("Liquidity filters — defaults target actionable contracts; loosen for exotic names"):
+    with st.expander("Liquidity & sanity filters — defaults target actionable contracts"):
         fc = st.columns(3)
         min_oi = fc[0].number_input("Min open interest", 0, 100000, 100, step=10,
                                     help="Open contracts at this strike. Higher = more liquid.")
         two_sided = fc[1].checkbox("Require two-sided quote (bid & ask > 0)", value=True)
         max_spread = fc[2].slider("Max bid/ask spread %", 0, 200, 25,
                                   help="(ask−bid)/mid. Wide spreads are costly to enter/exit.")
+        fc2 = st.columns(2)
+        min_dte = fc2[0].number_input("Min days to expiry", 0, 365, 7, step=1,
+                                      help="0-DTE / near-expiry options are ~all intrinsic and "
+                                           "have no vol content — exclude them.")
+        moneyness_pct = fc2[1].slider("Strike within ±% of spot", 5, 100, 30,
+                                      help="Keeps near-the-money strikes; drops deep ITM/OTM wings "
+                                           "that are untradeable as premium and pollute the surface.")
 
     if st.button("Scan options", type="primary"):
         st.session_state["t1_run"] = True
@@ -223,7 +233,8 @@ with tab1:
         with st.spinner("Pulling chains and solving IV…"):
             df, rv_map, spot_map, yfrontier, diag = build_options_table(
                 tickers, int(exp_n), side, rfr_window,
-                min_oi=int(min_oi), require_two_sided=two_sided, max_spread=float(max_spread))
+                min_oi=int(min_oi), require_two_sided=two_sided, max_spread=float(max_spread),
+                min_dte=int(min_dte), moneyness_pct=int(moneyness_pct))
 
         st.session_state["t1_last_df"] = df
         if df.empty:

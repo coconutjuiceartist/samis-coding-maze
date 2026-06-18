@@ -83,6 +83,32 @@ def test_enrich_chain_clamps_garbage_iv_and_otm_only_csp():
     assert bool(enr.loc[0, "two_sided"]) and bool(enr.loc[1, "two_sided"])
 
 
+def test_enrich_drops_degenerate_near_expiry_iv():
+    # 0-DTE-ish deep-ITM put: mid ~= intrinsic, so the solver returns ~0. That
+    # degenerate "IV 0.0%" must be dropped to NaN (below the iv floor), not
+    # passed through to pollute richness (the Run-4 NVDA bug).
+    chain = pd.DataFrame({
+        "strike": [380.0], "bid": [239.9], "ask": [240.1], "lastPrice": [240.0],
+        "openInterest": [5000], "volume": [3000], "impliedVolatility": [0.0],
+    })
+    enr = O.enrich_chain(chain, spot=140.0, r=0.036, expiry_dte=0.5, kind="put", realized_vol=0.41)
+    assert np.isnan(enr.loc[0, "iv"])
+
+
+def test_liquidity_filter_dte_and_moneyness():
+    df = pd.DataFrame({
+        "iv": [0.3, 0.3, 0.3, 0.3],
+        "mid": [2.0, 2.0, 2.0, 2.0],
+        "two_sided": [True, True, True, True],
+        "open_int": [1000, 1000, 1000, 1000],
+        "spread_pct": [5, 5, 5, 5],
+        "dte": [0.5, 30, 30, 30],          # row0 is 0-DTE -> dropped
+        "moneyness": [1.0, 1.0, 2.5, 0.5],  # row2 deep ITM, row3 deep OTM -> dropped
+    })
+    out = O.liquidity_filter(df, min_open_int=10, min_dte=7, moneyness_range=(0.7, 1.3))
+    assert list(out.index) == [1]
+
+
 def test_liquidity_filter():
     df = pd.DataFrame({
         "iv": [0.30, np.nan, 0.25, 0.40, 0.35],

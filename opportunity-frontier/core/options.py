@@ -175,6 +175,7 @@ def enrich_chain(
     realized_vol: float | None = None,
     q: float = 0.0,
     max_iv: float = MAX_PLAUSIBLE_IV,
+    iv_floor: float = 0.01,
 ) -> pd.DataFrame:
     """Enrich a raw yfinance option chain with mids, own-solved IV, Greeks and
     the per-contract signals described in CLAUDE.md §4.
@@ -214,6 +215,7 @@ def enrich_chain(
     strike = pd.to_numeric(col("strike"), errors="coerce")
     df["dte"] = expiry_dte
     df["log_moneyness"] = np.log(strike / spot)
+    df["moneyness"] = strike / spot  # strike / spot, for a near-the-money band
 
     # %OTM: how far out-of-the-money the strike sits.
     if is_call:
@@ -231,8 +233,11 @@ def enrich_chain(
     used_solver = np.array(used_solver, dtype=bool)
     # Own-solved IV first (CLAUDE.md §3); only fall back to Yahoo's field.
     iv = np.where(used_solver, solved_iv, yahoo_iv)
-    # Reject implausible IV so garbage values never reach the plots/table.
-    plausible = np.isfinite(iv) & (iv > 0) & (iv <= max_iv)
+    # Reject implausible IV so garbage values never reach the plots/table. The
+    # floor matters as much as the cap: a near-expiry / deep-ITM contract is
+    # ~all intrinsic, so the solver returns ~0 ("IV 0.0%") — that's a degenerate
+    # quote with no vol content, not a real reading.
+    plausible = np.isfinite(iv) & (iv >= iv_floor) & (iv <= max_iv)
     df["iv"] = np.where(plausible, iv, np.nan)
     df["iv_source"] = np.where(used_solver & plausible, "solved",
                                np.where(plausible, "yahoo", "n/a"))
@@ -277,12 +282,21 @@ def liquidity_filter(
     require_two_sided: bool = True,
     max_spread_pct: float | None = None,
     need_iv: bool = True,
+    min_dte: float | None = None,
+    moneyness_range: tuple[float, float] | None = None,
 ) -> pd.DataFrame:
-    """Keep only contracts that are tradeable and have a usable IV.
+    """Keep only contracts that are tradeable, near the money, and have a usable IV.
 
     Liquidity is a first-class screen (CLAUDE.md §2, Blankfein): a desk only
     warehouses risk it can exit. Drops rows with no plausible IV, no positive
-    mid, no two-sided market, thin open interest, or a too-wide spread.
+    mid, no two-sided market, thin open interest, a too-wide spread, too few days
+    to expiry (0-DTE has no vol content), or a strike far from spot (deep
+    ITM/OTM wings are ~all intrinsic / untradeable and pollute the surface).
+
+    Note the spread filter alone is *not* enough: a deep-ITM contract is
+    intrinsic-heavy, so its bid/ask is a tiny % of a large price and it sails
+    through — which is exactly how 0-DTE deep-ITM puts hijacked an earlier scan.
+    The DTE and moneyness screens are what actually remove them.
     """
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
@@ -297,4 +311,10 @@ def liquidity_filter(
         mask &= pd.to_numeric(df["open_int"], errors="coerce").fillna(0) >= min_open_int
     if max_spread_pct is not None and "spread_pct" in df.columns:
         mask &= pd.to_numeric(df["spread_pct"], errors="coerce").fillna(np.inf) <= max_spread_pct
+    if min_dte is not None and "dte" in df.columns:
+        mask &= pd.to_numeric(df["dte"], errors="coerce").fillna(0) >= min_dte
+    if moneyness_range is not None and "moneyness" in df.columns:
+        lo, hi = moneyness_range
+        m = pd.to_numeric(df["moneyness"], errors="coerce")
+        mask &= m.between(lo, hi)
     return df[mask].copy()
