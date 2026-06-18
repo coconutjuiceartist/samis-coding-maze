@@ -260,11 +260,13 @@ def enrich_chain(
     else:
         df["csp_yield"] = np.nan
 
-    # Volatility risk premium: implied minus trailing realised.
-    if realized_vol is not None and np.isfinite(realized_vol):
+    # Volatility risk premium: implied minus trailing realised, and the ratio.
+    if realized_vol is not None and np.isfinite(realized_vol) and realized_vol > 0:
         df["vrp"] = df["iv"] - realized_vol
+        df["iv_rv_ratio"] = df["iv"] / realized_vol  # >1 vol rich, <1 vol cheap
     else:
         df["vrp"] = np.nan
+        df["iv_rv_ratio"] = np.nan
 
     return df
 

@@ -252,37 +252,55 @@ with tab1:
 
             n_rich = int((df["signal"] == "RICH → sell").sum())
             n_cheap = int((df["signal"] == "CHEAP → buy").sum())
-            top_rich = (df[df["signal"] == "RICH → sell"]
-                        .sort_values("richness", ascending=False)["ticker"].head(3).tolist())
-            msg = f"**{n_rich} RICH (sell)**, **{n_cheap} CHEAP (buy)**, {len(df) - n_rich - n_cheap} fair."
-            if top_rich:
-                msg += f" Richest names: {', '.join(top_rich)}."
-            st.success(msg)
+            ranked = df.sort_values("richness", ascending=False)
+            richest, cheapest = ranked.iloc[0], ranked.iloc[-1]
+
+            def _tag(row):
+                rr = row.get("iv_rv_ratio", np.nan)
+                rr_txt = f", IV/RV {rr:.2f}" if np.isfinite(rr) else ""
+                return f"{row['ticker']} {row['strike']:.0f}p (richness {row['richness']:+.2f}{rr_txt})"
+
+            if n_rich or n_cheap:
+                st.success(f"**{n_rich} strong RICH (sell)** · **{n_cheap} strong CHEAP (buy)** "
+                           f"signals (|richness| > 0.7) out of {len(df)} contracts.")
+            else:
+                st.info("No *strong* signals (|richness| > 0.7) this scan — normal in a quiet tape. "
+                        "Showing the most rich- and cheap-leaning contracts so you always have "
+                        "candidates to weigh.")
+            st.caption(f"Most rich-leaning: **{_tag(richest)}** → sell premium.  ·  "
+                       f"Most cheap-leaning: **{_tag(cheapest)}** → buy convexity.")
             st.caption("⚠️ |delta| is **not** the tail risk of a short option, and 'RICH → sell' "
                        "marks where premium is, not free money. Check spread_% and open_int before acting.")
 
-            # -------- Opportunities table (the actionable output, shown first) --------
+            # -------- Opportunities (always surface both ends of the ranking) --------
             st.subheader("🎯 Opportunities (ranked by richness)")
-            only_flagged = st.checkbox(
-                "Show only flagged opportunities (hide 'fair')", value=True,
-                help="A 'fair' contract is in line with its own smile and realised vol — "
-                     "no relative-value edge. Untick to see the full filtered chain.")
             rename = {"kind": "side", "dte": "DTE", "iv": "IV", "vrp": "VRP",
-                      "csp_yield": "annual_CSP_yield", "spread_pct": "spread_%",
-                      "abs_delta": "|delta|", "signal": "flag", "iv_source": "IV_src"}
-            order = ["ticker", "expiry", "strike", "side", "DTE", "log_moneyness", "mid", "IV",
-                     "VRP", "annual_CSP_yield", "spread_%", "open_int", "volume", "|delta|",
-                     "skew_resid", "value_ratio", "richness", "flag", "IV_src"]
-            disp = (df.rename(columns=rename)
-                      .replace([np.inf, -np.inf], np.nan))
-            disp = disp[[c for c in order if c in disp.columns]]
-            disp = disp.sort_values("richness", ascending=False, na_position="last")
-            if only_flagged:
-                disp = disp[disp["flag"] != "fair"]
-            if disp.empty:
-                st.info("No flagged opportunities in this scan — every liquid contract is fairly "
-                        "priced vs its own smile and realised vol. Untick the box above to see all, "
-                        "or widen the ticker list / expiries.")
+                      "iv_rv_ratio": "IV/RV", "csp_yield": "annual_CSP_yield",
+                      "spread_pct": "spread_%", "abs_delta": "|delta|", "signal": "flag",
+                      "iv_source": "IV_src"}
+            full = df.rename(columns=rename).replace([np.inf, -np.inf], np.nan)
+            fmt = {"strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
+                   "IV": "{:.1%}", "IV/RV": "{:.2f}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
+                   "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
+                   "z_skew": "{:.2f}", "z_vrp": "{:.2f}", "value_ratio": "{:.2f}",
+                   "richness": "{:.2f}", "DTE": "{:.0f}"}
+            compact = ["ticker", "expiry", "strike", "IV", "IV/RV", "VRP", "annual_CSP_yield",
+                       "|delta|", "spread_%", "open_int", "richness", "flag"]
+
+            def _view(frame):
+                return frame[[c for c in compact if c in frame.columns]]
+
+            cS, cB = st.columns(2)
+            with cS:
+                st.markdown("**🔴 Richest — premium-selling candidates**")
+                st.caption("High IV vs its own smile *and* vs the stock's realised vol.")
+                st.dataframe(_view(full.sort_values("richness", ascending=False).head(8))
+                             .style.format(fmt, na_rep="—"), use_container_width=True, height=320)
+            with cB:
+                st.markdown("**🟢 Cheapest — convexity-buying candidates**")
+                st.caption("Low IV vs its own smile *and* vs realised — cheap optionality (Taleb/PTJ).")
+                st.dataframe(_view(full.sort_values("richness", ascending=True).head(8))
+                             .style.format(fmt, na_rep="—"), use_container_width=True, height=320)
 
             def _flag_row(row):
                 f = str(row.get("flag", ""))
@@ -290,16 +308,14 @@ with tab1:
                       else "background-color:#e3ffe6" if f.startswith("CHEAP") else "")
                 return [bg] * len(row)
 
-            if not disp.empty:
-                st.dataframe(
-                    disp.style.format({
-                        "strike": "{:.1f}", "log_moneyness": "{:.3f}", "mid": "{:.2f}",
-                        "IV": "{:.1%}", "VRP": "{:.1%}", "annual_CSP_yield": "{:.1%}",
-                        "spread_%": "{:.0f}%", "|delta|": "{:.2f}", "skew_resid": "{:.3f}",
-                        "value_ratio": "{:.2f}", "richness": "{:.2f}", "DTE": "{:.0f}",
-                    }, na_rep="—").apply(_flag_row, axis=1),
-                    use_container_width=True, height=440,
-                )
+            with st.expander(f"Full ranked chain ({len(df)} contracts) — skew vs realised breakdown"):
+                order = ["ticker", "expiry", "strike", "DTE", "log_moneyness", "mid", "IV", "IV/RV",
+                         "VRP", "annual_CSP_yield", "spread_%", "open_int", "volume", "|delta|",
+                         "skew_resid", "z_skew", "z_vrp", "value_ratio", "richness", "flag", "IV_src"]
+                disp = full[[c for c in order if c in full.columns]].sort_values(
+                    "richness", ascending=False, na_position="last")
+                st.dataframe(disp.style.format(fmt, na_rep="—").apply(_flag_row, axis=1),
+                             use_container_width=True, height=440)
             st.download_button("⬇ Download full chain (CSV)", df.to_csv(index=False),
                                "option_frontier.csv", "text/csv")
 

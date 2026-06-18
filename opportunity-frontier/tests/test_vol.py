@@ -60,7 +60,7 @@ def test_add_richness_labels_global_fallback():
 
 
 def test_add_richness_grouped_by_surface():
-    # Per-(ticker,expiry) skew z and per-ticker VRP z.
+    # skew z within each (ticker, expiry); VRP z across the whole scan.
     df = pd.DataFrame({
         "ticker": ["A", "A", "A", "B", "B", "B"],
         "expiry": ["x", "x", "x", "y", "y", "y"],
@@ -71,6 +71,20 @@ def test_add_richness_grouped_by_surface():
     # richest contract in each surface is flagged RICH, cheapest CHEAP
     assert out["signal"].iloc[0] == "RICH → sell"
     assert out["signal"].iloc[2] == "CHEAP → buy"
+    assert {"z_skew", "z_vrp"}.issubset(out.columns)
+
+
+def test_richness_vrp_is_cross_sectional():
+    # A name whose whole surface is vol-rich (high VRP) but with a flat,
+    # cleanly-fitted smile must still flag RICH — the realised-vol signal lives
+    # across names, not within a ticker. (Per-ticker standardisation, the old
+    # behaviour, would zero this out.)
+    rows = []
+    for t, vrp, n in [("RICH", 0.40, 2), ("MID", 0.0, 8), ("CHEAP", -0.10, 2)]:
+        rows += [{"ticker": t, "expiry": "e", "skew_resid": 0.0, "vrp": vrp}] * n
+    out = V.add_richness(pd.DataFrame(rows), threshold=0.7)
+    assert (out[out.ticker == "RICH"]["signal"] == "RICH → sell").all()
+    assert (out[out.ticker == "MID"]["signal"] == "fair").all()
 
 
 def test_vix_regime_branches():

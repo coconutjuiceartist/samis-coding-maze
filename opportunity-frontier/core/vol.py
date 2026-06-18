@@ -126,13 +126,21 @@ def add_richness(df: pd.DataFrame, threshold: float = 0.7) -> pd.DataFrame:
     """Composite richness = mean of standardised skew-residual and standardised
     VRP, with a categorical label (CLAUDE.md §4).
 
-    Standardisation is *local* so the comparison is apples-to-apples: the skew
-    residual is z-scored within each (ticker, expiry) surface and the VRP within
-    each ticker (every name has its own realised-vol baseline). Falls back to a
-    global z-score when those grouping columns are absent.
+    The two legs are standardised on *different* scopes, on purpose:
 
-    RICH (> +threshold) => premium is dear, lean sell; CHEAP (< -threshold) =>
-    lean buy. Threshold defaults to 0.7.
+      * **skew residual** — z-scored *within each (ticker, expiry) surface*: "is
+        this strike rich/cheap vs its own smile" is inherently a within-surface
+        question (§4 frontier 1).
+      * **VRP (IV − realised vol)** — z-scored *across the whole scan*
+        (cross-sectional): "is this name's vol expensive vs what the stock
+        actually realises" is an absolute, cross-name question (§4 frontier 2,
+        Blankfein's "sell insurance when it's dear"). Standardising VRP *within*
+        a ticker would subtract out that name's realised vol — cancelling the
+        entire IV-vs-realised signal and collapsing the composite into a copy of
+        the skew. So VRP is ranked across everything you're looking at.
+
+    RICH (> +threshold) => premium dear, lean sell; CHEAP (< -threshold) => lean
+    buy. Threshold defaults to 0.7.
     """
     out = df.copy()
 
@@ -144,15 +152,12 @@ def add_richness(df: pd.DataFrame, threshold: float = 0.7) -> pd.DataFrame:
     else:
         z_skew = pd.Series(0.0, index=out.index)
 
-    if "vrp" in out:
-        if "ticker" in out.columns:
-            z_vrp = out.groupby("ticker")["vrp"].transform(_floored_z)
-        else:
-            z_vrp = _floored_z(out["vrp"])
-    else:
-        z_vrp = pd.Series(0.0, index=out.index)
+    # VRP standardised cross-sectionally (across the whole scan), never per-ticker.
+    z_vrp = _floored_z(out["vrp"]) if "vrp" in out else pd.Series(0.0, index=out.index)
 
     # Average the two standardised legs, tolerating a NaN in either.
+    out["z_skew"] = z_skew.to_numpy()
+    out["z_vrp"] = z_vrp.to_numpy()
     out["richness"] = np.nanmean(np.vstack([z_skew.to_numpy(), z_vrp.to_numpy()]), axis=0)
     out["signal"] = np.select(
         [out["richness"] > threshold, out["richness"] < -threshold],

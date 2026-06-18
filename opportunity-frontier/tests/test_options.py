@@ -109,7 +109,9 @@ def test_enrich_chain_columns():
     })
     enr = O.enrich_chain(chain, spot=100, r=0.03, expiry_dte=30, kind="put", realized_vol=0.2)
     for col in ("mid", "iv", "delta", "gamma", "theta", "vega", "csp_yield",
-                "vrp", "spread_pct", "open_int", "log_moneyness", "abs_delta"):
+                "vrp", "iv_rv_ratio", "spread_pct", "open_int", "log_moneyness", "abs_delta"):
         assert col in enr.columns
     assert (enr["mid"] > 0).all()
     assert np.isfinite(enr["vrp"]).all()
+    # IV/RV ratio is consistent with VRP = IV - RV at RV=0.2
+    assert enr["iv_rv_ratio"].iloc[0] == pytest.approx(enr["iv"].iloc[0] / 0.2)
