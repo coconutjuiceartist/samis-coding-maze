@@ -171,19 +171,23 @@ def build_options_table(tickers, expiries_per_name, side, rv_window,
                 enr["spot"] = spot
                 rows.append(enr)
     empty = pd.DataFrame()
+    diag = {"raw": 0, "kept": 0, "kept_by_ticker": {}}
     if not rows:
-        return empty, realized_by_ticker, spot_by_ticker, empty
+        return empty, realized_by_ticker, spot_by_ticker, empty, diag
     raw_df = pd.concat(rows, ignore_index=True)
+    diag["raw"] = len(raw_df)
     # Drop illiquid / no-IV junk BEFORE fitting so the surface, frontier and
     # richness are computed only on tradeable, sane contracts.
     df = O.liquidity_filter(raw_df, min_open_int=min_oi,
                             require_two_sided=require_two_sided, max_spread_pct=max_spread)
+    diag["kept"] = len(df)
     if df.empty:
-        return empty, realized_by_ticker, spot_by_ticker, empty
+        return empty, realized_by_ticker, spot_by_ticker, empty, diag
+    diag["kept_by_ticker"] = df.groupby("ticker").size().to_dict()
     df = V.fit_skew(df)
     df, frontier = V.yield_risk_frontier(df)
     df = V.add_richness(df)
-    return df, realized_by_ticker, spot_by_ticker, frontier
+    return df, realized_by_ticker, spot_by_ticker, frontier, diag
 
 
 with tab1:
@@ -217,19 +221,34 @@ with tab1:
     if st.session_state.get("t1_run"):
         tickers = parse_tickers(tk_text)
         with st.spinner("Pulling chains and solving IV…"):
-            df, rv_map, spot_map, yfrontier = build_options_table(
+            df, rv_map, spot_map, yfrontier, diag = build_options_table(
                 tickers, int(exp_n), side, rfr_window,
                 min_oi=int(min_oi), require_two_sided=two_sided, max_spread=float(max_spread))
 
         st.session_state["t1_last_df"] = df
         if df.empty:
-            st.warning("No tradeable contracts after filtering. Yahoo may be rate-limiting, "
-                       "the tickers have no liquid options, or the filters are too strict — "
-                       "loosen them, reduce names, or hit Refresh.")
+            if diag["raw"] == 0:
+                st.warning("No option data returned. Yahoo may be rate-limiting, the tickers have "
+                           "no listed options, or the hosts aren't allow-listed — hit Refresh or try again.")
+            else:
+                st.warning(f"Pulled {diag['raw']} listed contracts but **0 passed the liquidity "
+                           f"filter** (min OI {int(min_oi)}, max spread {int(max_spread)}%, "
+                           f"two-sided={two_sided}). These names are thinly traded — loosen the "
+                           "filters in the expander above, or add more liquid tickers.")
         else:
             st.caption(f"Realised vol ({rfr_window}d): " +
                        "  ".join(f"{t}={rv*100:.0f}%" for t, rv in rv_map.items() if np.isfinite(rv))
-                       + f"  ·  {len(df)} tradeable contracts  ·  loaded {stamp()}")
+                       + f"  ·  filtered {diag['raw']} → {diag['kept']} tradeable contracts  ·  loaded {stamp()}")
+
+            thin = [t for t, n in diag["kept_by_ticker"].items() if n < 4]
+            if thin:
+                st.warning("Too few liquid strikes to fit a skew for: **" + ", ".join(thin) +
+                           "** (need ≥4). Their points still plot, but the skew signal needs a "
+                           "fuller surface — loosen liquidity filters or add more expiries.")
+            if len(tickers) < 3:
+                st.caption("ℹ️ This is a *relative-value* scanner — it ranks contracts against each "
+                           "other. Give it several liquid names (e.g. SPY, QQQ, AAPL, TSLA, NVDA) "
+                           "across 2–3 expiries so there's a real cross-section to rank.")
 
             n_rich = int((df["signal"] == "RICH → sell").sum())
             n_cheap = int((df["signal"] == "CHEAP → buy").sum())

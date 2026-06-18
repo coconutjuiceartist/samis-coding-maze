@@ -27,9 +27,10 @@ _N = norm.cdf
 _n = norm.pdf
 
 # Above this, an "implied vol" is almost certainly a stale/garbage Yahoo field or
-# a non-arbitrageable quote, not a real vol. 5.0 == 500% is already extreme even
-# for a post-IPO name, so anything beyond it is dropped rather than plotted.
-MAX_PLAUSIBLE_IV = 5.0
+# a non-arbitrageable quote, not a real vol. 8.0 == 800% leaves headroom for
+# genuinely wild small-caps/meme names while still rejecting Yahoo's nonsense
+# (which typically prints 1000%+ or near-zero on illiquid strikes).
+MAX_PLAUSIBLE_IV = 8.0
 
 
 def _d1_d2(S: float, K: float, T: float, r: float, sigma: float, q: float = 0.0):
